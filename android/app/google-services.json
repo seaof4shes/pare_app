@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "935050209141",
+    "project_id": "pare-7ab0d",
+    "storage_bucket": "pare-7ab0d.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:935050209141:android:63357a716f5675b8bc153c",
+        "android_client_info": {
+          "package_name": "com.example.pare_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCFqmFW39PaAPzaLHOfKCjzF4ouHAYSnTY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
