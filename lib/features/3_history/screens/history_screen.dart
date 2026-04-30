@@ -1,6 +1,4 @@
 import 'package:flutter/material.dart';
-import '../../2_home/screens/home_screen.dart';
-import '../../4_settings/screens/settings_screen.dart';
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
@@ -13,8 +11,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
   int selectedFilter = 0;
 
   static const Color primaryBlue = Color(0xFF092C56);
-  static const Color grayBlue = Color(0xFF5B7088);
   static const Color cardColor = Color(0xFFEFF4F3);
+  static const Color backgroundColor = Color(0xFFF7F8FA);
 
   final List<Map<String, dynamic>> history = [
     {
@@ -60,10 +58,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Widget _header() {
-    return const Row(
+    return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Text(
+        const Text(
           "P.A.R.E",
           style: TextStyle(
             color: primaryBlue,
@@ -71,102 +69,130 @@ class _HistoryScreenState extends State<HistoryScreen> {
             fontWeight: FontWeight.w900,
           ),
         ),
-        Icon(Icons.shield, color: primaryBlue, size: 34),
+        Container(
+          width: 44,
+          height: 44,
+          decoration: const BoxDecoration(
+            color: Color.fromRGBO(9, 44, 86, 0.10),
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(Icons.security, color: primaryBlue, size: 26),
+        ),
       ],
     );
   }
 
   Widget _filterButton(String text, int index) {
-    final bool selected = selectedFilter == index;
-
-    return GestureDetector(
-      onTap: () => setState(() => selectedFilter = index),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 9),
-        decoration: BoxDecoration(
-          color: selected ? primaryBlue : grayBlue,
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Text(
-          text,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 17,
-            fontWeight: FontWeight.w700,
+    final selected = selectedFilter == index;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () => setState(() => selectedFilter = index),
+        child: Container(
+          height: 42,
+          decoration: BoxDecoration(
+            color: selected ? primaryBlue : Colors.grey.shade300,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            text,
+            style: TextStyle(
+              color: selected ? Colors.white : Colors.black87,
+              fontWeight: FontWeight.w700,
+            ),
           ),
         ),
       ),
     );
   }
 
-  Widget _historyCard(Map<String, dynamic> item) {
-    final bool safe = item['safe'] as bool;
+  Widget _historyTile(Map<String, dynamic> item) {
+    final bool safe = item['safe'];
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 16),
-      padding: const EdgeInsets.all(18),
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
       decoration: BoxDecoration(
         color: cardColor,
         borderRadius: BorderRadius.circular(14),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.18),
-            blurRadius: 4,
-            offset: const Offset(0, 3),
-          ),
-        ],
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.person, size: 34, color: Colors.black),
-          const SizedBox(width: 12),
+          // Icon
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Icon(
+              item['category'] == 'Calls' ? Icons.phone : Icons.sms,
+              color: primaryBlue,
+              size: 22,
+            ),
+          ),
+
+          const SizedBox(width: 14),
+
+          // Text content
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // Name
                 Text(
                   item['name'],
                   style: const TextStyle(
-                    color: primaryBlue,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w900,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.black87,
                   ),
                 ),
-                const SizedBox(height: 12),
-                _infoLine("Type:", item['type']),
-                _infoLine("Date and Time:", item['date']),
+
+                const SizedBox(height: 4),
+
+                // Date
+                Text(
+                  item['date'],
+                  style: const TextStyle(fontSize: 12, color: Colors.black45),
+                ),
+
+                const SizedBox(height: 10),
+
+                // Result
                 Row(
-                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    const Text(
-                      "Result: ",
-                      style: TextStyle(
-                        color: primaryBlue,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                    Flexible(
-                      child: Text(
-                        item['result'],
-                        style: const TextStyle(
-                          color: Color(0xFF496985),
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
+                    Icon(
+                      safe
+                          ? Icons.check_circle_outline
+                          : Icons.warning_amber_rounded,
+                      size: 14,
+                      color: safe ? Colors.green : Colors.red,
                     ),
                     const SizedBox(width: 5),
-                    Icon(
-                      safe ? Icons.check_circle : Icons.warning_amber_rounded,
-                      color: safe ? Colors.green : Colors.red,
-                      size: 16,
+                    Text(
+                      item['result'],
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: safe ? Colors.green : Colors.red,
+                      ),
                     ),
                   ],
                 ),
-                _infoLine("Confidence:", item['confidence']),
-                _infoLine("Action:", item['action']),
+
+                const SizedBox(height: 6),
+
+                // Confidence
+                Text(
+                  "Confidence: ${item['confidence']}",
+                  style: const TextStyle(fontSize: 12, color: Colors.black54),
+                ),
+
+                const SizedBox(height: 2),
+
+                // Action
+                Text(
+                  "Action: ${item['action']}",
+                  style: const TextStyle(fontSize: 12, color: Colors.black54),
+                ),
               ],
             ),
           ),
@@ -175,54 +201,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
     );
   }
 
-  Widget _infoLine(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: RichText(
-        text: TextSpan(
-          children: [
-            TextSpan(
-              text: "$label ",
-              style: const TextStyle(
-                color: primaryBlue,
-                fontSize: 14,
-                fontWeight: FontWeight.w900,
-              ),
-            ),
-            TextSpan(
-              text: value,
-              style: const TextStyle(
-                color: Color(0xFF496985),
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _goToHome() {
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (_) => const HomeScreen()),
-    );
-  }
-
-  void _goToSettings() {
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (_) => const SettingsScreen()),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final items = filteredHistory;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF7F8FA),
+      backgroundColor: backgroundColor,
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(14, 18, 14, 0),
@@ -230,7 +214,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _header(),
+
               const SizedBox(height: 16),
+
               Row(
                 children: [
                   _filterButton("All", 0),
@@ -240,41 +226,25 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   _filterButton("Messages", 2),
                 ],
               ),
+
               const SizedBox(height: 16),
+
               Expanded(
-                child: ListView.builder(
-                  itemCount: items.length,
-                  itemBuilder: (context, index) {
-                    return _historyCard(items[index]);
-                  },
-                ),
+                child: items.isEmpty
+                    ? const Center(
+                        child: Text(
+                          "No history yet",
+                          style: TextStyle(fontSize: 15, color: Colors.black45),
+                        ),
+                      )
+                    : ListView.builder(
+                        itemCount: items.length,
+                        itemBuilder: (_, i) => _historyTile(items[i]),
+                      ),
               ),
             ],
           ),
         ),
-      ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: 1,
-        selectedItemColor: primaryBlue,
-        unselectedItemColor: Colors.black,
-        onTap: (index) {
-          if (index == 0) {
-            _goToHome();
-          } else if (index == 2) {
-            _goToSettings();
-          }
-        },
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.home_outlined),
-            label: "Home",
-          ),
-          BottomNavigationBarItem(icon: Icon(Icons.history), label: "History"),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.manage_accounts_outlined),
-            label: "Settings",
-          ),
-        ],
       ),
     );
   }

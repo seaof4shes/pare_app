@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
-import '../../2_home/screens/home_screen.dart';
-import '../../3_history/screens/history_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:pare_app/features/1_auth/screens/login_screen.dart';
+import 'package:app_settings/app_settings.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -12,6 +13,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   static const Color primaryBlue = Color(0xFF092C56);
   static const Color cardColor = Color(0xFFEFF4F3);
+  static const Color backgroundColor = Color(0xFFF7F8FA);
 
   bool protectCalls = true;
   bool protectSMS = true;
@@ -22,11 +24,57 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool notifSound = true;
   bool notifVibrate = true;
 
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSettings();
+  }
+
+  Future<void> _loadSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      protectCalls = prefs.getBool('call_detection') ?? true;
+      protectSMS = prefs.getBool('msg_detection') ?? true;
+      blockCalls = prefs.getBool('call_auto_block') ?? true;
+      blockSMS = prefs.getBool('msg_scam_alerts') ?? true;
+      notifPopup = prefs.getBool('notif_popup') ?? true;
+      notifSound = prefs.getBool('notif_sound') ?? true;
+      notifVibrate = prefs.getBool('notif_vibrate') ?? true;
+      _isLoading = false;
+    });
+  }
+
+  Future<void> _saveBool(String key, bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(key, value);
+  }
+
+  Future<void> _logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('phone');
+    await prefs.remove('username');
+    await prefs.remove('protection_activated');
+    if (!mounted) return;
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+      (route) => false,
+    );
+  }
+
+  Future<void> _openAppSettings() async {
+    await AppSettings.openAppSettings();
+  }
+
+  // Header matches Home and History exactly
   Widget _header() {
-    return const Row(
+    return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Text(
+        const Text(
           "P.A.R.E",
           style: TextStyle(
             color: primaryBlue,
@@ -34,30 +82,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
             fontWeight: FontWeight.w900,
           ),
         ),
-        Icon(Icons.shield, color: primaryBlue, size: 34),
+        Container(
+          width: 44,
+          height: 44,
+          decoration: const BoxDecoration(
+            color: Color.fromRGBO(9, 44, 86, 0.10),
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(Icons.security, color: primaryBlue, size: 26),
+        ),
       ],
-    );
-  }
-
-  Widget _switchTile(String title, bool value, Function(bool) onChanged) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              title,
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-            ),
-          ),
-          Switch(
-            value: value,
-            activeThumbColor: primaryBlue,
-            activeTrackColor: primaryBlue.withValues(alpha: 0.4),
-            onChanged: onChanged,
-          ),
-        ],
-      ),
     );
   }
 
@@ -82,30 +116,169 @@ class _SettingsScreenState extends State<SettingsScreen> {
             color: cardColor,
             borderRadius: BorderRadius.circular(14),
           ),
-          child: Column(children: children),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: children,
+          ),
         ),
       ],
     );
   }
 
-  void _goToHome() {
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (_) => const HomeScreen()),
+  Widget _switchTile({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required bool value,
+    required Function(bool) onChanged,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Icon(icon, color: primaryBlue, size: 22),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.black87,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w500,
+                    color: Colors.black54,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            value: value,
+            activeThumbColor: primaryBlue,
+            activeTrackColor: primaryBlue.withValues(alpha: 0.35),
+            inactiveThumbColor: Colors.grey.shade500,
+            inactiveTrackColor: Colors.grey.shade300,
+            onChanged: onChanged,
+          ),
+        ],
+      ),
     );
   }
 
-  void _goToHistory() {
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (_) => const HistoryScreen()),
+  Widget _permissionRow({required IconData icon, required String text}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          Icon(icon, color: primaryBlue, size: 21),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: Colors.black87,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _aboutRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            "$label: ",
+            style: const TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w800,
+              color: primaryBlue,
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: Colors.black87,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _managePermissionsButton() {
+    return SizedBox(
+      width: double.infinity,
+      height: 48,
+      child: OutlinedButton.icon(
+        onPressed: _openAppSettings,
+        icon: const Icon(Icons.settings, color: primaryBlue),
+        label: const Text(
+          "Manage Permissions",
+          style: TextStyle(fontWeight: FontWeight.w800, color: primaryBlue),
+        ),
+        style: OutlinedButton.styleFrom(
+          side: const BorderSide(color: primaryBlue, width: 1.2),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _logoutButton() {
+    return SizedBox(
+      width: double.infinity,
+      height: 55,
+      child: ElevatedButton.icon(
+        onPressed: _logout,
+        icon: const Icon(Icons.logout, color: Colors.white),
+        label: const Text(
+          "Logout",
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w800,
+            color: Colors.white,
+          ),
+        ),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: Colors.red.shade500,
+          elevation: 3,
+          shadowColor: Colors.red.withValues(alpha: 0.3),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF7F8FA),
+      backgroundColor: backgroundColor,
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(14, 18, 14, 0),
@@ -113,90 +286,138 @@ class _SettingsScreenState extends State<SettingsScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _header(),
+
+              const SizedBox(height: 16),
+
               Expanded(
-                child: SingleChildScrollView(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _section("Protection", [
-                        _switchTile(
-                          "Protect me from scam calls",
-                          protectCalls,
-                          (v) => setState(() => protectCalls = v),
+                child: _isLoading
+                    ? const Center(
+                        child: CircularProgressIndicator(color: primaryBlue),
+                      )
+                    : SingleChildScrollView(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _section("Protection", [
+                              _switchTile(
+                                icon: Icons.phone_in_talk_outlined,
+                                title: "Call Detection",
+                                subtitle:
+                                    "Detect suspicious or AI-generated calls",
+                                value: protectCalls,
+                                onChanged: (v) {
+                                  setState(() => protectCalls = v);
+                                  _saveBool('call_detection', v);
+                                },
+                              ),
+                              _switchTile(
+                                icon: Icons.sms_outlined,
+                                title: "Message Detection",
+                                subtitle: "Detect suspicious scam messages",
+                                value: protectSMS,
+                                onChanged: (v) {
+                                  setState(() => protectSMS = v);
+                                  _saveBool('msg_detection', v);
+                                },
+                              ),
+                              _switchTile(
+                                icon: Icons.call_end_outlined,
+                                title: "Auto Block Calls",
+                                subtitle:
+                                    "Automatically block detected scam calls",
+                                value: blockCalls,
+                                onChanged: (v) {
+                                  setState(() => blockCalls = v);
+                                  _saveBool('call_auto_block', v);
+                                },
+                              ),
+                              _switchTile(
+                                icon: Icons.warning_amber_rounded,
+                                title: "Scam Message Alerts",
+                                subtitle:
+                                    "Show alerts when scam messages are detected",
+                                value: blockSMS,
+                                onChanged: (v) {
+                                  setState(() => blockSMS = v);
+                                  _saveBool('msg_scam_alerts', v);
+                                },
+                              ),
+                            ]),
+                            _section("Notifications", [
+                              _switchTile(
+                                icon: Icons.notifications_active_outlined,
+                                title: "Popup Alerts",
+                                subtitle:
+                                    "Show warning popups for suspicious activity",
+                                value: notifPopup,
+                                onChanged: (v) {
+                                  setState(() => notifPopup = v);
+                                  _saveBool('notif_popup', v);
+                                },
+                              ),
+                              _switchTile(
+                                icon: Icons.volume_up_outlined,
+                                title: "Sound Alerts",
+                                subtitle:
+                                    "Play a sound when a scam is detected",
+                                value: notifSound,
+                                onChanged: (v) {
+                                  setState(() => notifSound = v);
+                                  _saveBool('notif_sound', v);
+                                },
+                              ),
+                              _switchTile(
+                                icon: Icons.vibration_outlined,
+                                title: "Vibration Alerts",
+                                subtitle:
+                                    "Vibrate the phone during scam warnings",
+                                value: notifVibrate,
+                                onChanged: (v) {
+                                  setState(() => notifVibrate = v);
+                                  _saveBool('notif_vibrate', v);
+                                },
+                              ),
+                            ]),
+                            _section("Privacy & Permissions", [
+                              const Text(
+                                "Allow this app to:",
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w800,
+                                  color: Colors.black87,
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              _permissionRow(
+                                icon: Icons.call,
+                                text: "Access incoming calls",
+                              ),
+                              _permissionRow(
+                                icon: Icons.sms,
+                                text: "Access incoming messages",
+                              ),
+                              _permissionRow(
+                                icon: Icons.mic,
+                                text: "Capture short voice samples",
+                              ),
+                              const SizedBox(height: 8),
+                              _managePermissionsButton(),
+                            ]),
+                            _section("About", [
+                              _aboutRow("App Name", "P.A.R.E"),
+                              _aboutRow("Version", "1.0"),
+                              _aboutRow("Developed for", "Capstone Project"),
+                            ]),
+                            const SizedBox(height: 24),
+                            _logoutButton(),
+                            const SizedBox(height: 24),
+                          ],
                         ),
-                        _switchTile(
-                          "Protect me from scam messages",
-                          protectSMS,
-                          (v) => setState(() => protectSMS = v),
-                        ),
-                        _switchTile(
-                          "Automatically block scam calls",
-                          blockCalls,
-                          (v) => setState(() => blockCalls = v),
-                        ),
-                        _switchTile(
-                          "Automatically block scam messages",
-                          blockSMS,
-                          (v) => setState(() => blockSMS = v),
-                        ),
-                      ]),
-                      _section("Notifications", [
-                        _switchTile(
-                          "Show a pop-up warning when a scam is detected",
-                          notifPopup,
-                          (v) => setState(() => notifPopup = v),
-                        ),
-                        _switchTile(
-                          "Play a sound when a scam is detected",
-                          notifSound,
-                          (v) => setState(() => notifSound = v),
-                        ),
-                        _switchTile(
-                          "Make my phone vibrate when a scam is detected",
-                          notifVibrate,
-                          (v) => setState(() => notifVibrate = v),
-                        ),
-                      ]),
-                      _section("Privacy & Permissions", [
-                        const Align(
-                          alignment: Alignment.centerLeft,
-                          child: Text(
-                            "Manage permissions in your phone settings.",
-                            style: TextStyle(fontSize: 15),
-                          ),
-                        ),
-                      ]),
-                      const SizedBox(height: 20),
-                    ],
-                  ),
-                ),
+                      ),
               ),
             ],
           ),
         ),
-      ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: 2,
-        selectedItemColor: primaryBlue,
-        unselectedItemColor: Colors.black,
-        onTap: (index) {
-          if (index == 0) {
-            _goToHome();
-          } else if (index == 1) {
-            _goToHistory();
-          }
-        },
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.home_outlined),
-            label: "Home",
-          ),
-          BottomNavigationBarItem(icon: Icon(Icons.history), label: "History"),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.manage_accounts_outlined),
-            label: "Settings",
-          ),
-        ],
       ),
     );
   }

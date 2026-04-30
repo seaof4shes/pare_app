@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-import 'package:pare_app/features/2_home/screens/home_screen.dart';
+import 'package:pare_app/features/main_nav_screen.dart';
 import 'signup_screen.dart';
 
 class OtpScreen extends StatefulWidget {
@@ -12,6 +12,7 @@ class OtpScreen extends StatefulWidget {
   final String verificationId;
   final bool isSignUp;
   final String? username;
+  final String? pin;
 
   const OtpScreen({
     super.key,
@@ -19,6 +20,7 @@ class OtpScreen extends StatefulWidget {
     required this.verificationId,
     this.isSignUp = false,
     this.username,
+    this.pin,
   });
 
   @override
@@ -105,6 +107,7 @@ class _OtpScreenState extends State<OtpScreen> {
     await FirebaseFirestore.instance.collection('users').doc(widget.phone).set({
       'username': widget.username ?? '',
       'phone': widget.phone,
+      'pin': widget.pin ?? '',
       'role': 'elderly',
       'createdAt': FieldValue.serverTimestamp(),
     });
@@ -125,7 +128,7 @@ class _OtpScreenState extends State<OtpScreen> {
 
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => const HomeScreen()),
+          MaterialPageRoute(builder: (_) => const MainNavScreen()),
           (_) => false,
         );
       },
@@ -180,7 +183,7 @@ class _OtpScreenState extends State<OtpScreen> {
 
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
+        MaterialPageRoute(builder: (_) => const MainNavScreen()),
         (_) => false,
       );
     } on FirebaseAuthException catch (e) {
