@@ -2,7 +2,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+
+import 'package:pare_app/core/database/user_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:pare_app/features/main_nav_screen.dart';
 import 'signup_screen.dart';
@@ -104,13 +106,17 @@ class _OtpScreenState extends State<OtpScreen> {
   Future<void> _saveUserIfSignUp() async {
     if (!widget.isSignUp) return;
 
-    await FirebaseFirestore.instance.collection('users').doc(widget.phone).set({
-      'username': widget.username ?? '',
-      'phone': widget.phone,
-      'pin': widget.pin ?? '',
-      'role': 'elderly',
-      'createdAt': FieldValue.serverTimestamp(),
-    });
+    await UserService().createUser(
+      username: widget.username ?? '',
+      phoneNumber: widget.phone,
+      mpin: widget.pin ?? '',
+    );
+
+    await UserService().syncUserToFirestore(
+      username: widget.username ?? '',
+      phoneNumber: widget.phone,
+      mpin: widget.pin ?? '',
+    );
   }
 
   Future<void> _resendOtp() async {
@@ -178,6 +184,11 @@ class _OtpScreenState extends State<OtpScreen> {
 
       await FirebaseAuth.instance.signInWithCredential(credential);
       await _saveUserIfSignUp();
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('phone', widget.phone);
+      await prefs.setString('username', widget.username ?? 'User');
+      await prefs.setBool('isLoggedIn', true);
 
       if (!mounted) return;
 

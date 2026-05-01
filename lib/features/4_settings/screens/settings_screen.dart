@@ -15,6 +15,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   static const Color cardColor = Color(0xFFEFF4F3);
   static const Color backgroundColor = Color(0xFFF7F8FA);
 
+  static const String keyCallDetection = 'call_detection';
+  static const String keyMsgDetection = 'msg_detection';
+  static const String keyCallAutoBlock = 'call_auto_block';
+  static const String keyMsgScamAlerts = 'msg_scam_alerts';
+  static const String keyNotifPopup = 'notif_popup';
+  static const String keyNotifSound = 'notif_sound';
+  static const String keyNotifVibrate = 'notif_vibrate';
+
   bool protectCalls = true;
   bool protectSMS = true;
   bool blockCalls = true;
@@ -34,15 +42,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
+
     if (!mounted) return;
+
     setState(() {
-      protectCalls = prefs.getBool('call_detection') ?? true;
-      protectSMS = prefs.getBool('msg_detection') ?? true;
-      blockCalls = prefs.getBool('call_auto_block') ?? true;
-      blockSMS = prefs.getBool('msg_scam_alerts') ?? true;
-      notifPopup = prefs.getBool('notif_popup') ?? true;
-      notifSound = prefs.getBool('notif_sound') ?? true;
-      notifVibrate = prefs.getBool('notif_vibrate') ?? true;
+      protectCalls = prefs.getBool(keyCallDetection) ?? true;
+      protectSMS = prefs.getBool(keyMsgDetection) ?? true;
+      blockCalls = prefs.getBool(keyCallAutoBlock) ?? true;
+      blockSMS = prefs.getBool(keyMsgScamAlerts) ?? true;
+
+      notifPopup = prefs.getBool(keyNotifPopup) ?? true;
+      notifSound = prefs.getBool(keyNotifSound) ?? true;
+      notifVibrate = prefs.getBool(keyNotifVibrate) ?? true;
+
       _isLoading = false;
     });
   }
@@ -56,7 +68,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('phone');
     await prefs.remove('username');
-    await prefs.remove('protection_activated');
+    await prefs.setBool('protection_activated', false);
     if (!mounted) return;
     Navigator.pushAndRemoveUntil(
       context,
@@ -307,7 +319,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 value: protectCalls,
                                 onChanged: (v) {
                                   setState(() => protectCalls = v);
-                                  _saveBool('call_detection', v);
+                                  _saveBool(keyCallDetection, v);
                                 },
                               ),
                               _switchTile(
@@ -317,7 +329,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 value: protectSMS,
                                 onChanged: (v) {
                                   setState(() => protectSMS = v);
-                                  _saveBool('msg_detection', v);
+                                  _saveBool(keyMsgDetection, v);
                                 },
                               ),
                               _switchTile(
@@ -328,7 +340,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 value: blockCalls,
                                 onChanged: (v) {
                                   setState(() => blockCalls = v);
-                                  _saveBool('call_auto_block', v);
+                                  _saveBool(keyCallAutoBlock, v);
                                 },
                               ),
                               _switchTile(
@@ -339,7 +351,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 value: blockSMS,
                                 onChanged: (v) {
                                   setState(() => blockSMS = v);
-                                  _saveBool('msg_scam_alerts', v);
+                                  _saveBool(keyMsgScamAlerts, v);
                                 },
                               ),
                             ]),
@@ -352,7 +364,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 value: notifPopup,
                                 onChanged: (v) {
                                   setState(() => notifPopup = v);
-                                  _saveBool('notif_popup', v);
+                                  _saveBool(keyNotifPopup, v);
                                 },
                               ),
                               _switchTile(
@@ -363,7 +375,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 value: notifSound,
                                 onChanged: (v) {
                                   setState(() => notifSound = v);
-                                  _saveBool('notif_sound', v);
+                                  _saveBool(keyNotifSound, v);
                                 },
                               ),
                               _switchTile(
@@ -374,7 +386,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 value: notifVibrate,
                                 onChanged: (v) {
                                   setState(() => notifVibrate = v);
-                                  _saveBool('notif_vibrate', v);
+                                  _saveBool(keyNotifVibrate, v);
                                 },
                               ),
                             ]),

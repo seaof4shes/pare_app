@@ -1,5 +1,14 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:pare_app/services/notification_service.dart';
+
+import 'package:pare_app/core/permissions/permission_service.dart';
+import 'package:pare_app/services/sms_model_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -9,6 +18,14 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  final SmsModelService smsModel = SmsModelService();
+
+  static const EventChannel smsEventChannel = EventChannel(
+    'pare_app/sms_receiver',
+  );
+
+  StreamSubscription? _smsSubscription;
+
   static const Color primaryBlue = Color(0xFF092C56);
   static const Color cardColor = Color(0xFFEFF4F3);
   static const Color accentBlue = Color(0xFF2A5298);
@@ -16,6 +33,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   bool _isActivated = false;
   bool _isLoading = true;
+  bool _modelReady = false;
+  bool _smsListenerStarted = false;
 
   bool _callDetection = true;
   bool _msgDetection = true;
@@ -29,11 +48,130 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    initializeApp();
+  }
+
+  Future<void> initializeApp() async {
+    await _loadState();
+    await initModel();
+
+    if (_isActivated) {
+      await startSmsListener();
+    }
+  }
+
+  Future<void> initModel() async {
+    try {
+      await smsModel.loadModel();
+      _modelReady = true;
+      debugPrint("✅ SMS model loaded");
+    } catch (e) {
+      debugPrint("❌ Model error: $e");
+    }
+  }
+
+  Future<void> startSmsListener() async {
+    if (_smsListenerStarted) return;
+
+    final status = await Permission.sms.request();
+
+    if (!status.isGranted) {
+      debugPrint("❌ SMS permission denied");
+      return;
+    }
+
+    _smsListenerStarted = true;
+
+    _smsSubscription = smsEventChannel.receiveBroadcastStream().listen(
+      (event) async {
+        final data = Map<String, dynamic>.from(event);
+
+        final sender = data['sender']?.toString() ?? 'Unknown';
+        final smsBody = data['body']?.toString() ?? '';
+
+        debugPrint("📩 NATIVE SMS RECEIVED");
+        debugPrint("Sender: $sender");
+        debugPrint("Body: $smsBody");
+
+        if (smsBody.isEmpty) return;
+        if (!_isActivated || !_msgDetection) return;
+        if (!_modelReady) return;
+
+        await detectIncomingSms(message: smsBody, sender: sender);
+      },
+      onError: (error) {
+        debugPrint("❌ Native SMS listener error: $error");
+      },
+    );
+
+    debugPrint("✅ Native SMS listener started");
+  }
+
+  Future<void> detectIncomingSms({
+    required String message,
+    required String sender,
+  }) async {
+    try {
+      final result = await smsModel.predictSms(message);
+
+      final label = result['label'] as String;
+      final score = result['score'] as double;
+
+      await saveSmsToHistory(
+        sender: sender,
+        message: message,
+        label: label,
+        score: score,
+      );
+
+      if (!mounted) return;
+
+      if (label == 'scam' && _msgScamAlerts) {
+        await NotificationService.showScamSmsNotification(
+          sender: sender,
+          message: message,
+        );
+      }
+
+      debugPrint("📩 SMS from $sender");
+      debugPrint("Result: $label | Score: $score");
+    } catch (e) {
+      debugPrint("❌ SMS prediction error: $e");
+    }
+  }
+
+  Future<void> saveSmsToHistory({
+    required String sender,
+    required String message,
+    required String label,
+    required double score,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    final history = prefs.getStringList('sms_history') ?? [];
+
+    final record = {
+      'type': 'SMS',
+      'sender': sender,
+      'message': message,
+      'label': label,
+      'score': score,
+      'dateTime': DateTime.now().toIso8601String(),
+    };
+
+    history.add(jsonEncode(record));
+
+    await prefs.setStringList('sms_history', history);
+
+    debugPrint("✅ Saved to SMS history");
+  }
+
+  void refreshHomeSettings() {
     _loadState();
   }
 
   Future<void> _loadState() async {
     final prefs = await SharedPreferences.getInstance();
+
     final activated = prefs.getBool(_prefKey) ?? false;
     final savedUsername = prefs.getString('username') ?? "Username";
     final callDetection = prefs.getBool('call_detection') ?? true;
@@ -57,9 +195,39 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _onActivate() async {
     final prefs = await SharedPreferences.getInstance();
     final newState = !_isActivated;
+
+    if (newState) {
+      final granted = await PermissionService()
+          .requestAllProtectionPermissions();
+
+      await NotificationService.init();
+
+      if (!granted) {
+        if (!mounted) return;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text("Enable permissions in settings"),
+            action: SnackBarAction(
+              label: "OPEN SETTINGS",
+              onPressed: () {
+                openAppSettings();
+              },
+            ),
+          ),
+        );
+        return;
+      }
+
+      await startSmsListener();
+    }
+
     await prefs.setBool(_prefKey, newState);
+
     if (!mounted) return;
+
     setState(() => _isActivated = newState);
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -72,7 +240,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ── Header — same as HistoryScreen ────────────────────────────────────────
   Widget _header() {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -98,7 +265,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ── Shared helpers ─────────────────────────────────────────────────────────
   Widget _card({required Widget child}) {
     return Container(
       width: double.infinity,
@@ -179,9 +345,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // VIEW 1 — Inactive
-  // ══════════════════════════════════════════════════════════════════════════
   Widget _inactiveView() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -212,9 +375,7 @@ class _HomeScreenState extends State<HomeScreen> {
             color: Colors.black54,
           ),
         ),
-
         const SizedBox(height: 22),
-
         _card(
           child: Row(
             children: [
@@ -241,7 +402,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   SizedBox(height: 2),
                   Text(
-                    "Ready for activation",
+                    "Ready for Activation",
                     style: TextStyle(
                       fontSize: 15,
                       fontWeight: FontWeight.w700,
@@ -253,9 +414,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
         ),
-
         const SizedBox(height: 24),
-
         SizedBox(
           width: double.infinity,
           height: 66,
@@ -280,9 +439,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         ),
-
         const SizedBox(height: 24),
-
         _card(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -332,9 +489,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // VIEW 2 — Active
-  // ══════════════════════════════════════════════════════════════════════════
   Widget _activeView() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -365,19 +519,17 @@ class _HomeScreenState extends State<HomeScreen> {
             color: Colors.black54,
           ),
         ),
-
         const SizedBox(height: 20),
-
         _card(
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Padding(
+            children: const [
+              Padding(
                 padding: EdgeInsets.only(top: 3),
                 child: Icon(Icons.check_circle, color: Colors.green, size: 18),
               ),
-              const SizedBox(width: 10),
-              const Expanded(
+              SizedBox(width: 10),
+              Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -410,9 +562,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
         ),
-
         const SizedBox(height: 14),
-
         _card(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -437,9 +587,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
         ),
-
         const SizedBox(height: 14),
-
         _card(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -469,9 +617,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
         ),
-
         const SizedBox(height: 14),
-
         Center(
           child: TextButton(
             onPressed: _onActivate,
@@ -491,7 +637,13 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ── Build — same structure as HistoryScreen ────────────────────────────────
+  @override
+  void dispose() {
+    _smsSubscription?.cancel();
+    smsModel.close();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -505,9 +657,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     _header(),
-
                     const SizedBox(height: 16),
-
                     Expanded(
                       child: SingleChildScrollView(
                         child: _isActivated ? _activeView() : _inactiveView(),

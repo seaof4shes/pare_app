@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
@@ -14,38 +16,66 @@ class _HistoryScreenState extends State<HistoryScreen> {
   static const Color cardColor = Color(0xFFEFF4F3);
   static const Color backgroundColor = Color(0xFFF7F8FA);
 
-  final List<Map<String, dynamic>> history = [
-    {
-      'name': '+63 123 456 7890',
-      'type': 'Voice Call',
-      'date': 'March 24, 2026 - 10:15 AM',
-      'result': 'AI / Suspicious',
-      'confidence': '98% Suspicious',
-      'action': 'Call Blocked',
-      'category': 'Calls',
-      'safe': false,
-    },
-    {
-      'name': 'Killian',
-      'type': 'Voice Call',
-      'date': 'March 24, 2026 - 8:45 AM',
-      'result': 'Safe / Legit',
-      'confidence': '98% Safe',
-      'action': 'Allowed',
-      'category': 'Calls',
-      'safe': true,
-    },
-    {
-      'name': 'School Office',
-      'type': 'SMS Message',
-      'date': 'March 21, 2026 - 7:45 PM',
-      'result': 'Safe / Legit',
-      'confidence': '94% Safe',
-      'action': 'Allowed',
-      'category': 'Messages',
-      'safe': true,
-    },
-  ];
+  List<Map<String, dynamic>> history = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHistory();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _loadHistory();
+  }
+
+  Future<void> _loadHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    final smsHistory = prefs.getStringList('sms_history') ?? [];
+
+    final loadedHistory = smsHistory.map((item) {
+      final data = jsonDecode(item) as Map<String, dynamic>;
+      final label = data['label']?.toString() ?? 'legit';
+      final score = (data['score'] as num?)?.toDouble() ?? 0.0;
+
+      return {
+        'name': data['sender'] ?? 'Unknown',
+        'type': 'SMS Message',
+        'message': data['message'] ?? '',
+        'date': _formatDate(data['dateTime']),
+        'result': label == 'scam' ? 'Scam / Suspicious' : 'Safe / Legit',
+        'confidence': '${(score * 100).toStringAsFixed(1)}%',
+        'action': label == 'scam' ? 'Alert Shown' : 'Allowed',
+        'category': 'Messages',
+        'safe': label != 'scam',
+      };
+    }).toList();
+
+    if (!mounted) return;
+
+    setState(() {
+      history = loadedHistory.reversed.toList();
+    });
+  }
+
+  String _formatDate(dynamic rawDate) {
+    if (rawDate == null) return 'Unknown date';
+
+    final date = DateTime.tryParse(rawDate.toString());
+    if (date == null) return 'Unknown date';
+
+    final hour = date.hour > 12
+        ? date.hour - 12
+        : date.hour == 0
+        ? 12
+        : date.hour;
+
+    final minute = date.minute.toString().padLeft(2, '0');
+    final period = date.hour >= 12 ? 'PM' : 'AM';
+
+    return '${date.month}/${date.day}/${date.year} - $hour:$minute $period';
+  }
 
   List<Map<String, dynamic>> get filteredHistory {
     if (selectedFilter == 1) {
@@ -108,6 +138,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   Widget _historyTile(Map<String, dynamic> item) {
     final bool safe = item['safe'];
+    final String message = item['message'] ?? '';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -119,7 +150,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Icon
           Padding(
             padding: const EdgeInsets.only(top: 2),
             child: Icon(
@@ -128,15 +158,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
               size: 22,
             ),
           ),
-
           const SizedBox(width: 14),
-
-          // Text content
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Name
                 Text(
                   item['name'],
                   style: const TextStyle(
@@ -145,18 +171,21 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     color: Colors.black87,
                   ),
                 ),
-
                 const SizedBox(height: 4),
-
-                // Date
                 Text(
                   item['date'],
                   style: const TextStyle(fontSize: 12, color: Colors.black45),
                 ),
-
+                if (message.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    message,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12, color: Colors.black54),
+                  ),
+                ],
                 const SizedBox(height: 10),
-
-                // Result
                 Row(
                   children: [
                     Icon(
@@ -177,18 +206,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     ),
                   ],
                 ),
-
                 const SizedBox(height: 6),
-
-                // Confidence
                 Text(
                   "Confidence: ${item['confidence']}",
                   style: const TextStyle(fontSize: 12, color: Colors.black54),
                 ),
-
                 const SizedBox(height: 2),
-
-                // Action
                 Text(
                   "Action: ${item['action']}",
                   style: const TextStyle(fontSize: 12, color: Colors.black54),
@@ -214,9 +237,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _header(),
-
               const SizedBox(height: 16),
-
               Row(
                 children: [
                   _filterButton("All", 0),
@@ -226,21 +247,32 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   _filterButton("Messages", 2),
                 ],
               ),
-
               const SizedBox(height: 16),
-
               Expanded(
-                child: items.isEmpty
-                    ? const Center(
-                        child: Text(
-                          "No history yet",
-                          style: TextStyle(fontSize: 15, color: Colors.black45),
+                child: RefreshIndicator(
+                  onRefresh: _loadHistory,
+                  child: items.isEmpty
+                      ? ListView(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          children: const [
+                            SizedBox(height: 250),
+                            Center(
+                              child: Text(
+                                "No history yet",
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  color: Colors.black45,
+                                ),
+                              ),
+                            ),
+                          ],
+                        )
+                      : ListView.builder(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          itemCount: items.length,
+                          itemBuilder: (_, i) => _historyTile(items[i]),
                         ),
-                      )
-                    : ListView.builder(
-                        itemCount: items.length,
-                        itemBuilder: (_, i) => _historyTile(items[i]),
-                      ),
+                ),
               ),
             ],
           ),

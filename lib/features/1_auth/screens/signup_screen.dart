@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+
+import 'package:pare_app/core/database/user_service.dart';
 
 import 'login_screen.dart';
 import 'otp_screen.dart';
@@ -114,12 +115,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
     setState(() => _isSendingOtp = true);
 
     try {
-      final userDoc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(phone)
-          .get();
-
-      if (userDoc.exists) {
+      final accountExists = await UserService().phoneExists(phone);
+      if (accountExists) {
         if (!mounted) return;
         setState(() => _isSendingOtp = false);
         ScaffoldMessenger.of(context).showSnackBar(

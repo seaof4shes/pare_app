@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'package:pare_app/core/database/user_service.dart';
 
 import 'package:pare_app/features/main_nav_screen.dart';
 import 'signup_screen.dart';
+import 'package:pare_app/features/1_auth/screens/forgot_mpin_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -55,30 +57,35 @@ class _LoginScreenState extends State<LoginScreen> {
     }
 
     final phone = _formatPhone(rawPhone);
+
     setState(() => _isSendingOtp = true);
 
     try {
-      final userDoc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(phone)
-          .get();
+      final accountExists = await UserService().phoneExists(phone);
 
-      if (!userDoc.exists) {
-        if (!mounted) return;
-        setState(() => _isSendingOtp = false);
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("No account found. Please sign up first."),
-          ),
+      if (!accountExists) {
+        final restored = await UserService().restoreUserFromFirestore(
+          phoneNumber: phone,
+          mpin: pin,
         );
-        return;
+
+        if (!restored) {
+          if (!mounted) return;
+          setState(() => _isSendingOtp = false);
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("No account found or incorrect PIN.")),
+          );
+          return;
+        }
       }
 
-      final userData = userDoc.data();
-      final savedPin = userData?['pin'];
+      final success = await UserService().loginUser(
+        usernameOrPhone: phone,
+        mpin: pin,
+      );
 
-      if (savedPin != pin) {
+      if (!success) {
         if (!mounted) return;
         setState(() => _isSendingOtp = false);
 
@@ -88,9 +95,12 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
 
+      final user = await UserService().getUserByPhone(phone);
+
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('username', userData?['username'] ?? 'Username');
       await prefs.setString('phone', phone);
+      await prefs.setString('username', user?['username'] ?? 'User');
+      await prefs.setBool('isLoggedIn', true);
 
       if (!mounted) return;
 
@@ -375,7 +385,12 @@ class _LoginScreenState extends State<LoginScreen> {
                       // Forgot Password
                       GestureDetector(
                         onTap: () {
-                          // Navigate to forgot password screen
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const ForgotMpinScreen(),
+                            ),
+                          );
                         },
                         child: const Text(
                           "Forgot Password?",

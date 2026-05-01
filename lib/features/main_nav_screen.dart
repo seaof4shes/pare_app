@@ -13,24 +13,31 @@ class MainNavScreen extends StatefulWidget {
 
 class _MainNavScreenState extends State<MainNavScreen> {
   int _selectedIndex = 0;
+  int _homeRefreshKey = 0;
 
   static const Color primaryBlue = Color(0xFF092C56);
 
-  final List<Widget> _screens = const [
-    HomeScreen(),
-    HistoryScreen(),
-    SettingsScreen(),
-  ];
-
   void _onNavTap(int index) {
-    setState(() => _selectedIndex = index);
+    if (index == 0) {
+      setState(() {
+        _homeRefreshKey++;
+        _selectedIndex = index;
+      });
+    } else {
+      setState(() => _selectedIndex = index);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: IndexedStack(index: _selectedIndex, children: _screens),
+    final screens = [
+      HomeScreen(key: ValueKey(_homeRefreshKey)),
+      const HistoryScreen(),
+      const SettingsScreen(),
+    ];
 
+    return Scaffold(
+      body: IndexedStack(index: _selectedIndex, children: screens),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _selectedIndex,
         onTap: _onNavTap,
