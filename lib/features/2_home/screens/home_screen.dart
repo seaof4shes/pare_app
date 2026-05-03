@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,8 +6,10 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:pare_app/services/notification_service.dart';
 
+import 'package:pare_app/core/database/database_helper.dart';
+
 import 'package:pare_app/core/permissions/permission_service.dart';
-import 'package:pare_app/services/sms_model_service.dart';
+import 'package:pare_app/core/ml/sms_detection_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -18,7 +19,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final SmsModelService smsModel = SmsModelService();
+  final SmsDetectionService smsModel = SmsDetectionService();
 
   static const EventChannel smsEventChannel = EventChannel(
     'pare_app/sms_receiver',
@@ -107,62 +108,100 @@ class _HomeScreenState extends State<HomeScreen> {
     debugPrint("✅ Native SMS listener started");
   }
 
+  double _calculateHybridConfidence({
+    required double mlScore,
+    required int keywordScore,
+  }) {
+    // Normalize keyword score into 0.0 - 1.0
+    final keywordConfidence = (keywordScore / 12).clamp(0.0, 1.0);
+
+    // Weighted hybrid scoring:
+    // 70% ML model + 30% rule-based keyword evidence
+    double hybridScore = (mlScore * 0.7) + (keywordConfidence * 0.3);
+
+    // If keyword score strongly indicates scam, raise minimum confidence
+    if (keywordScore >= 8 && hybridScore < 0.75) {
+      hybridScore = 0.75 + ((keywordScore - 8) * 0.03);
+    }
+
+    // If keyword score indicates suspicious, raise minimum confidence
+    if (keywordScore >= 4 && hybridScore < 0.50) {
+      hybridScore = 0.50 + ((keywordScore - 4) * 0.03);
+    }
+
+    return hybridScore.clamp(0.0, 0.99);
+  }
+
   Future<void> detectIncomingSms({
     required String message,
     required String sender,
   }) async {
     try {
-      final result = await smsModel.predictSms(message);
+      final result = await smsModel.predict(message);
 
-      final label = result['label'] as String;
-      final score = result['score'] as double;
+      final label = result.label;
+      final mlScore = result.scamProbability;
+      final keywordScore = result.keywordScore;
+      final risk = result.riskLevel;
 
-      await saveSmsToHistory(
+      final finalConfidence = _calculateHybridConfidence(
+        mlScore: mlScore,
+        keywordScore: keywordScore,
+      );
+
+      final historyId = await saveSmsToHistory(
         sender: sender,
         message: message,
         label: label,
-        score: score,
+        score: finalConfidence,
       );
 
       if (!mounted) return;
 
-      if (label == 'scam' && _msgScamAlerts) {
+      if ((label.toLowerCase() == 'scam' ||
+              label.toLowerCase() == 'suspicious') &&
+          _msgScamAlerts) {
         await NotificationService.showScamSmsNotification(
           sender: sender,
           message: message,
+          payload: historyId.toString(),
+          riskLevel: risk,
         );
       }
 
       debugPrint("📩 SMS from $sender");
-      debugPrint("Result: $label | Score: $score");
+      debugPrint(
+        "Result: $label | Risk: $risk | ML Score: $mlScore | Final Confidence: $finalConfidence",
+      );
+      debugPrint("Keyword Score: ${result.keywordScore}");
     } catch (e) {
       debugPrint("❌ SMS prediction error: $e");
     }
   }
 
-  Future<void> saveSmsToHistory({
+  Future<int> saveSmsToHistory({
     required String sender,
     required String message,
     required String label,
     required double score,
   }) async {
-    final prefs = await SharedPreferences.getInstance();
-    final history = prefs.getStringList('sms_history') ?? [];
+    final isScam = label.toLowerCase() == 'scam';
+    final isSuspicious = label.toLowerCase() == 'suspicious';
 
-    final record = {
-      'type': 'SMS',
-      'sender': sender,
+    final id = await DatabaseHelper.instance.insertHistory({
+      'name': sender,
+      'type': 'SMS Message',
       'message': message,
-      'label': label,
-      'score': score,
+      'result': isScam || isSuspicious ? 'Scam / Suspicious' : 'Safe / Legit',
+      'confidence': score,
+      'action': isScam || isSuspicious ? 'Alert Shown' : 'Allowed',
+      'category': 'Messages',
+      'safe': isScam || isSuspicious ? 0 : 1,
       'dateTime': DateTime.now().toIso8601String(),
-    };
+    });
 
-    history.add(jsonEncode(record));
-
-    await prefs.setStringList('sms_history', history);
-
-    debugPrint("✅ Saved to SMS history");
+    debugPrint("✅ Saved SMS to SQLite history with ID: $id");
+    return id;
   }
 
   void refreshHomeSettings() {
@@ -244,13 +283,26 @@ class _HomeScreenState extends State<HomeScreen> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        const Text(
-          "P.A.R.E",
-          style: TextStyle(
-            color: primaryBlue,
-            fontSize: 30,
-            fontWeight: FontWeight.w900,
-          ),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: const [
+            Text(
+              "P.A.R.E",
+              style: TextStyle(
+                color: primaryBlue,
+                fontSize: 30,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            Text(
+              "Phishing & Response Engine",
+              style: TextStyle(
+                color: Colors.black45,
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
         ),
         Container(
           width: 44,
@@ -345,36 +397,46 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _inactiveView() {
+  Widget _greeting(String subtitle) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        RichText(
-          text: TextSpan(
-            style: const TextStyle(
-              fontSize: 32,
-              fontWeight: FontWeight.w900,
-              color: Colors.black,
-              height: 1.15,
-            ),
-            children: [
-              const TextSpan(text: "Hello,\n"),
-              TextSpan(
-                text: "$_username!",
-                style: const TextStyle(color: primaryBlue),
-              ),
-            ],
+        Text(
+          "Hello,",
+          style: const TextStyle(
+            fontSize: 38,
+            fontWeight: FontWeight.w900,
+            color: Colors.black,
+            height: 1.1,
+          ),
+        ),
+        Text(
+          "$_username!",
+          style: const TextStyle(
+            fontSize: 26,
+            fontWeight: FontWeight.w800,
+            color: primaryBlue,
+            height: 1.1,
           ),
         ),
         const SizedBox(height: 5),
-        const Text(
-          "Stay protected from scams.",
-          style: TextStyle(
+        Text(
+          subtitle,
+          style: const TextStyle(
             fontSize: 14,
             fontWeight: FontWeight.w500,
             color: Colors.black54,
           ),
         ),
+      ],
+    );
+  }
+
+  Widget _inactiveView() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _greeting("Stay protected from scams."),
         const SizedBox(height: 22),
         _card(
           child: Row(
@@ -493,32 +555,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        RichText(
-          text: TextSpan(
-            style: const TextStyle(
-              fontSize: 32,
-              fontWeight: FontWeight.w900,
-              color: Colors.black,
-              height: 1.15,
-            ),
-            children: [
-              const TextSpan(text: "Hello,\n"),
-              TextSpan(
-                text: "$_username!",
-                style: const TextStyle(color: primaryBlue),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 5),
-        const Text(
-          "Your protection is running in the background.",
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w500,
-            color: Colors.black54,
-          ),
-        ),
+        _greeting("Your protection is running in the background."),
         const SizedBox(height: 20),
         _card(
           child: Row(
@@ -618,21 +655,30 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
         const SizedBox(height: 14),
-        Center(
-          child: TextButton(
+        // Replace the Center > TextButton at the bottom of _activeView()
+        SizedBox(
+          width: double.infinity,
+          height: 56,
+          child: OutlinedButton(
             onPressed: _onActivate,
+            style: OutlinedButton.styleFrom(
+              side: BorderSide(color: Colors.red.shade700, width: 1.5),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+            ),
             child: Text(
-              "Deactivate Protection",
+              "DEACTIVATE PROTECTION",
               style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: Colors.red.shade400,
-                decoration: TextDecoration.underline,
-                decorationColor: Colors.red.shade400,
+                fontSize: 15,
+                fontWeight: FontWeight.w900,
+                color: Colors.red.shade700,
+                letterSpacing: 1.0,
               ),
             ),
           ),
         ),
+        const SizedBox(height: 24),
       ],
     );
   }

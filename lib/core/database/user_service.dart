@@ -19,6 +19,41 @@ class UserService {
     });
   }
 
+  Future<bool> usernameExists(String username) async {
+    final db = await LocalDatabase.instance.database;
+
+    final result = await db.query(
+      'users',
+      where: 'username = ?',
+      whereArgs: [username],
+      limit: 1,
+    );
+
+    return result.isNotEmpty;
+  }
+
+  Future<bool> phoneExists(String phoneNumber) async {
+    final db = await LocalDatabase.instance.database;
+
+    final result = await db.query(
+      'users',
+      where: 'phone_number = ?',
+      whereArgs: [phoneNumber],
+      limit: 1,
+    );
+
+    return result.isNotEmpty;
+  }
+
+  Future<bool> phoneExistsInFirebase(String phoneNumber) async {
+    final doc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(phoneNumber)
+        .get();
+
+    return doc.exists;
+  }
+
   Future<bool> restoreUserFromFirestore({
     required String phoneNumber,
     required String mpin,
@@ -98,6 +133,7 @@ class UserService {
       'users',
       where: '(username = ? OR phone_number = ?) AND mpin_hash = ?',
       whereArgs: [usernameOrPhone, usernameOrPhone, HashHelper.hashMpin(mpin)],
+      limit: 1,
     );
 
     return result.isNotEmpty;
@@ -114,19 +150,6 @@ class UserService {
     );
 
     if (result.isEmpty) return null;
-
     return result.first;
-  }
-
-  Future<bool> phoneExists(String phoneNumber) async {
-    final db = await LocalDatabase.instance.database;
-
-    final result = await db.query(
-      'users',
-      where: 'phone_number = ?',
-      whereArgs: [phoneNumber],
-    );
-
-    return result.isNotEmpty;
   }
 }

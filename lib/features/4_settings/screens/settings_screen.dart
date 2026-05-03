@@ -81,18 +81,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await AppSettings.openAppSettings();
   }
 
-  // Header matches Home and History exactly
   Widget _header() {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        const Text(
-          "P.A.R.E",
-          style: TextStyle(
-            color: primaryBlue,
-            fontSize: 30,
-            fontWeight: FontWeight.w900,
-          ),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: const [
+            Text(
+              "P.A.R.E",
+              style: TextStyle(
+                color: primaryBlue,
+                fontSize: 30,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            Text(
+              "Phishing & Response Engine",
+              style: TextStyle(
+                color: Colors.black45,
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
         ),
         Container(
           width: 44,
@@ -115,7 +127,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         Text(
           title,
           style: const TextStyle(
-            fontSize: 26,
+            fontSize: 18,
             fontWeight: FontWeight.w900,
             color: primaryBlue,
           ),

@@ -115,15 +115,39 @@ class _SignUpScreenState extends State<SignUpScreen> {
     setState(() => _isSendingOtp = true);
 
     try {
-      final accountExists = await UserService().phoneExists(phone);
-      if (accountExists) {
+      // ── Check username uniqueness ──────────────────────────────────────────
+      final usernameExists = await UserService().usernameExists(username);
+      if (usernameExists) {
         if (!mounted) return;
-        setState(() => _isSendingOtp = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("Account already exists. Please login instead."),
-          ),
-        );
+        setState(() {
+          _isSendingOtp = false;
+          _usernameError = "Username is already taken. Please choose another.";
+        });
+        return;
+      }
+
+      // ── Check phone in SQLite ──────────────────────────────────────────────
+      final phoneExistsLocal = await UserService().phoneExists(phone);
+      if (phoneExistsLocal) {
+        if (!mounted) return;
+        setState(() {
+          _isSendingOtp = false;
+          _phoneError =
+              "This number is already registered. Please login instead.";
+        });
+        return;
+      }
+
+      final phoneExistsFirebase = await UserService().phoneExistsInFirebase(
+        phone,
+      );
+      if (phoneExistsFirebase) {
+        if (!mounted) return;
+        setState(() {
+          _isSendingOtp = false;
+          _phoneError =
+              "This number is already registered. Please login instead.";
+        });
         return;
       }
 
@@ -240,83 +264,144 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
   // ── Terms overlay ──────────────────────────────────────────────────────────
   void _showTerms() {
+    // Track whether the user has scrolled to the bottom inside the dialog
+    bool reachedBottom = false;
+
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        backgroundColor: const Color(0xFF1E3A5F),
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: const [
-                  Icon(Icons.gavel_rounded, color: Colors.white70, size: 22),
-                  SizedBox(width: 10),
-                  Text(
-                    "Terms & Conditions",
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w800,
-                      color: whiteText,
-                    ),
-                  ),
-                ],
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final scrollController = ScrollController();
+
+            scrollController.addListener(() {
+              if (!reachedBottom &&
+                  scrollController.position.pixels >=
+                      scrollController.position.maxScrollExtent - 10) {
+                setDialogState(() => reachedBottom = true);
+              }
+            });
+
+            return Dialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
               ),
-
-              const SizedBox(height: 4),
-              const Divider(color: Color.fromRGBO(255, 255, 255, 0.2)),
-              const SizedBox(height: 8),
-
-              ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxHeight: MediaQuery.of(context).size.height * 0.45,
-                ),
-                child: const SingleChildScrollView(
-                  child: Text(
-                    _termsContent,
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 13.5,
-                      height: 1.65,
+              backgroundColor: const Color(0xFF1E3A5F),
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // ── Title (centered) ───────────────────────────────────
+                    Row(
+                      children: const [
+                        Icon(
+                          Icons.gavel_rounded,
+                          color: Colors.white70,
+                          size: 22,
+                        ),
+                        Expanded(
+                          child: Center(
+                            child: Text(
+                              "Terms & Conditions",
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w800,
+                                color: whiteText,
+                              ),
+                            ),
+                          ),
+                        ),
+                        // Invisible spacer to balance the icon
+                        SizedBox(width: 22),
+                      ],
                     ),
-                  ),
+
+                    const SizedBox(height: 4),
+                    const Divider(color: Color.fromRGBO(255, 255, 255, 0.2)),
+                    const SizedBox(height: 8),
+
+                    // ── Scrollable content ─────────────────────────────────
+                    ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxHeight: MediaQuery.of(context).size.height * 0.45,
+                      ),
+                      child: SingleChildScrollView(
+                        controller: scrollController,
+                        child: const Text(
+                          _termsContent,
+                          style: TextStyle(
+                            color: Colors.white70,
+                            fontSize: 13.5,
+                            height: 1.65,
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 8),
+
+                    // ── Scroll hint (shown until bottom reached) ───────────
+                    if (!reachedBottom)
+                      const Center(
+                        child: Text(
+                          "Scroll down to read all terms",
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            color: Colors.white38,
+                            fontStyle: FontStyle.italic,
+                          ),
+                        ),
+                      ),
+
+                    const SizedBox(height: 12),
+
+                    // ── Button (disabled until scrolled to bottom) ─────────
+                    SizedBox(
+                      width: double.infinity,
+                      height: 48,
+                      child: ElevatedButton(
+                        onPressed: reachedBottom
+                            ? () {
+                                // Auto-check the checkbox when confirmed
+                                setState(() {
+                                  _hasViewedTerms = true;
+                                  _agreed = true;
+                                  _termsError = null;
+                                });
+                                Navigator.pop(dialogContext);
+                              }
+                            : null,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: primaryBlue,
+                          disabledBackgroundColor: primaryBlue.withValues(
+                            alpha: 0.35,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: Text(
+                          "I have read this",
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: reachedBottom
+                                ? whiteText
+                                : whiteText.withValues(alpha: 0.4),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-
-              const SizedBox(height: 20),
-
-              SizedBox(
-                width: double.infinity,
-                height: 48,
-                child: ElevatedButton(
-                  onPressed: () {
-                    setState(() => _hasViewedTerms = true);
-                    Navigator.pop(context);
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: primaryBlue,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: const Text(
-                    "I have read this",
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      color: whiteText,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+            );
+          },
+        );
+      },
     );
   }
 

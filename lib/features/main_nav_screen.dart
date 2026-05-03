@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'package:pare_app/features/2_home/screens/home_screen.dart';
 import 'package:pare_app/features/3_history/screens/history_screen.dart';
 import 'package:pare_app/features/4_settings/screens/settings_screen.dart';
+import 'package:pare_app/services/notification_service.dart';
 
 class MainNavScreen extends StatefulWidget {
   const MainNavScreen({super.key});
@@ -13,26 +16,45 @@ class MainNavScreen extends StatefulWidget {
 
 class _MainNavScreenState extends State<MainNavScreen> {
   int _selectedIndex = 0;
-  int _homeRefreshKey = 0;
+  int? _openHistoryId;
+  StreamSubscription? _notifSub;
 
   static const Color primaryBlue = Color(0xFF092C56);
 
+  @override
+  void initState() {
+    super.initState();
+
+    _notifSub = NotificationService.onNotificationTap.listen((payload) {
+      final id = int.tryParse(payload);
+
+      if (id != null) {
+        setState(() {
+          _selectedIndex = 1;
+          _openHistoryId = id;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _notifSub?.cancel();
+    super.dispose();
+  }
+
   void _onNavTap(int index) {
-    if (index == 0) {
-      setState(() {
-        _homeRefreshKey++;
-        _selectedIndex = index;
-      });
-    } else {
-      setState(() => _selectedIndex = index);
-    }
+    setState(() {
+      _selectedIndex = index;
+      if (index != 1) _openHistoryId = null;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final screens = [
-      HomeScreen(key: ValueKey(_homeRefreshKey)),
-      const HistoryScreen(),
+      const HomeScreen(),
+      HistoryScreen(openHistoryId: _openHistoryId),
       const SettingsScreen(),
     ];
 
