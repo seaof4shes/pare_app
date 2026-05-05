@@ -1,32 +1,39 @@
 import 'package:permission_handler/permission_handler.dart';
 
 class PermissionService {
+  Future<bool> requestAllProtectionPermissions() async {
+    final statuses = await [
+      Permission.sms,
+      Permission.phone,
+      Permission.microphone,
+      Permission.contacts,
+    ].request();
+
+    final smsGranted = statuses[Permission.sms]?.isGranted ?? false;
+    final phoneGranted = statuses[Permission.phone]?.isGranted ?? false;
+    final micGranted = statuses[Permission.microphone]?.isGranted ?? false;
+    final contactsGranted = statuses[Permission.contacts]?.isGranted ?? false;
+
+    return smsGranted && phoneGranted && micGranted && contactsGranted;
+  }
+
   Future<bool> requestSmsPermissions() async {
-    final statuses = await [Permission.sms].request();
-    return statuses[Permission.sms]?.isGranted ?? false;
+    final status = await Permission.sms.request();
+    return status.isGranted;
   }
 
   Future<bool> requestCallPermissions() async {
-    final phoneStatus = await Permission.phone.request();
-    return phoneStatus.isGranted;
+    final status = await Permission.phone.request();
+    return status.isGranted;
   }
 
   Future<bool> requestMicrophonePermission() async {
-    final micStatus = await Permission.microphone.request();
-    return micStatus.isGranted;
+    final status = await Permission.microphone.request();
+    return status.isGranted;
   }
 
   Future<bool> requestContactsPermission() async {
-    final contactStatus = await Permission.contacts.request();
-    return contactStatus.isGranted;
-  }
-
-  Future<bool> requestAllProtectionPermissions() async {
-    final smsGranted = await requestSmsPermissions();
-    final callGranted = await requestCallPermissions();
-    final micGranted = await requestMicrophonePermission();
-    final contactsGranted = await requestContactsPermission();
-
-    return smsGranted && callGranted && micGranted && contactsGranted;
+    final status = await Permission.contacts.request();
+    return status.isGranted;
   }
 }

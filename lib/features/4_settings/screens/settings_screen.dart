@@ -19,7 +19,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   static const String keyMsgDetection = 'msg_detection';
   static const String keyCallAutoBlock = 'call_auto_block';
   static const String keyMsgScamAlerts = 'msg_scam_alerts';
-  static const String keyNotifPopup = 'notif_popup';
   static const String keyNotifSound = 'notif_sound';
   static const String keyNotifVibrate = 'notif_vibrate';
 
@@ -28,7 +27,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool blockCalls = true;
   bool blockSMS = true;
 
-  bool notifPopup = true;
   bool notifSound = true;
   bool notifVibrate = true;
 
@@ -51,7 +49,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       blockCalls = prefs.getBool(keyCallAutoBlock) ?? true;
       blockSMS = prefs.getBool(keyMsgScamAlerts) ?? true;
 
-      notifPopup = prefs.getBool(keyNotifPopup) ?? true;
       notifSound = prefs.getBool(keyNotifSound) ?? true;
       notifVibrate = prefs.getBool(keyNotifVibrate) ?? true;
 
@@ -368,17 +365,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               ),
                             ]),
                             _section("Notifications", [
-                              _switchTile(
-                                icon: Icons.notifications_active_outlined,
-                                title: "Popup Alerts",
-                                subtitle:
-                                    "Show warning popups for suspicious activity",
-                                value: notifPopup,
-                                onChanged: (v) {
-                                  setState(() => notifPopup = v);
-                                  _saveBool(keyNotifPopup, v);
-                                },
-                              ),
                               _switchTile(
                                 icon: Icons.volume_up_outlined,
                                 title: "Sound Alerts",

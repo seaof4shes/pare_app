@@ -7,19 +7,20 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:pare_app/services/notification_service.dart';
 
 import 'package:pare_app/core/database/database_helper.dart';
-
 import 'package:pare_app/core/permissions/permission_service.dart';
 import 'package:pare_app/core/ml/sms_detection_service.dart';
+import 'package:pare_app/core/ml/call_detection_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  State<HomeScreen> createState() => HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final SmsDetectionService smsModel = SmsDetectionService();
+  final CallDetectionService callDetectionService = CallDetectionService();
 
   static const EventChannel smsEventChannel = EventChannel(
     'pare_app/sms_receiver',
@@ -32,10 +33,19 @@ class _HomeScreenState extends State<HomeScreen> {
   static const Color accentBlue = Color(0xFF2A5298);
   static const Color backgroundColor = Color(0xFFF7F8FA);
 
+  static const String _prefKey = 'protection_activated';
+
+  static const String keyCallDetection = 'call_detection';
+  static const String keyMsgDetection = 'msg_detection';
+  static const String keyCallAutoBlock = 'call_auto_block';
+  static const String keyMsgScamAlerts = 'msg_scam_alerts';
+
   bool _isActivated = false;
   bool _isLoading = true;
   bool _modelReady = false;
+
   bool _smsListenerStarted = false;
+  bool _callListenerStarted = false;
 
   bool _callDetection = true;
   bool _msgDetection = true;
@@ -44,30 +54,79 @@ class _HomeScreenState extends State<HomeScreen> {
 
   String _username = "Username";
 
-  static const String _prefKey = 'protection_activated';
-
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     initializeApp();
+  }
+
+  Future<void> refreshHomeSettings() async {
+    await _loadState();
   }
 
   Future<void> initializeApp() async {
     await _loadState();
     await initModel();
-
-    if (_isActivated) {
-      await startSmsListener();
-    }
   }
 
   Future<void> initModel() async {
     try {
       await smsModel.loadModel();
-      _modelReady = true;
+
+      if (!mounted) return;
+
+      setState(() {
+        _modelReady = true;
+      });
+
       debugPrint("✅ SMS model loaded");
     } catch (e) {
       debugPrint("❌ Model error: $e");
+    }
+  }
+
+  Future<void> _loadState() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final activated = prefs.getBool(_prefKey) ?? false;
+    final savedUsername = prefs.getString('username') ?? "Username";
+
+    final callDetection = prefs.getBool(keyCallDetection) ?? true;
+    final msgDetection = prefs.getBool(keyMsgDetection) ?? true;
+    final callAutoBlock = prefs.getBool(keyCallAutoBlock) ?? true;
+    final msgScamAlerts = prefs.getBool(keyMsgScamAlerts) ?? true;
+
+    if (!mounted) return;
+
+    setState(() {
+      _username = savedUsername;
+      _isActivated = activated;
+
+      _callDetection = callDetection;
+      _msgDetection = msgDetection;
+      _callAutoBlock = callAutoBlock;
+      _msgScamAlerts = msgScamAlerts;
+
+      _isLoading = false;
+    });
+
+    if (!_isActivated) {
+      await _stopSmsListener();
+      await _stopCallDetection();
+      return;
+    }
+
+    if (_msgDetection) {
+      await startSmsListener();
+    } else {
+      await _stopSmsListener();
+    }
+
+    if (_callDetection) {
+      await startCallDetection();
+    } else {
+      await _stopCallDetection();
     }
   }
 
@@ -95,8 +154,26 @@ class _HomeScreenState extends State<HomeScreen> {
         debugPrint("Body: $smsBody");
 
         if (smsBody.isEmpty) return;
-        if (!_isActivated || !_msgDetection) return;
-        if (!_modelReady) return;
+
+        final prefs = await SharedPreferences.getInstance();
+
+        final activated = prefs.getBool(_prefKey) ?? false;
+        final msgDetection = prefs.getBool(keyMsgDetection) ?? true;
+
+        if (!activated) {
+          debugPrint("Protection is OFF. Skipping SMS detection.");
+          return;
+        }
+
+        if (!msgDetection) {
+          debugPrint("Message Detection is OFF. Skipping SMS detection.");
+          return;
+        }
+
+        if (!_modelReady) {
+          debugPrint("SMS model is not ready yet.");
+          return;
+        }
 
         await detectIncomingSms(message: smsBody, sender: sender);
       },
@@ -108,23 +185,50 @@ class _HomeScreenState extends State<HomeScreen> {
     debugPrint("✅ Native SMS listener started");
   }
 
+  Future<void> _stopSmsListener() async {
+    if (!_smsListenerStarted) return;
+
+    await _smsSubscription?.cancel();
+    _smsSubscription = null;
+    _smsListenerStarted = false;
+
+    debugPrint("🛑 SMS listener stopped");
+  }
+
+  Future<void> startCallDetection() async {
+    if (!_isActivated || !_callDetection) return;
+    if (_callListenerStarted) return;
+
+    try {
+      await callDetectionService.start();
+      _callListenerStarted = true;
+      debugPrint("📞 Call detection is enabled and ready.");
+    } catch (e) {
+      debugPrint("❌ Call detection error: $e");
+    }
+  }
+
+  Future<void> _stopCallDetection() async {
+    if (!_callListenerStarted) return;
+
+    await callDetectionService.stop();
+    _callListenerStarted = false;
+
+    debugPrint("🛑 Call detection stopped from Home");
+  }
+
   double _calculateHybridConfidence({
     required double mlScore,
     required int keywordScore,
   }) {
-    // Normalize keyword score into 0.0 - 1.0
     final keywordConfidence = (keywordScore / 12).clamp(0.0, 1.0);
 
-    // Weighted hybrid scoring:
-    // 70% ML model + 30% rule-based keyword evidence
     double hybridScore = (mlScore * 0.7) + (keywordConfidence * 0.3);
 
-    // If keyword score strongly indicates scam, raise minimum confidence
     if (keywordScore >= 8 && hybridScore < 0.75) {
       hybridScore = 0.75 + ((keywordScore - 8) * 0.03);
     }
 
-    // If keyword score indicates suspicious, raise minimum confidence
     if (keywordScore >= 4 && hybridScore < 0.50) {
       hybridScore = 0.50 + ((keywordScore - 4) * 0.03);
     }
@@ -137,6 +241,16 @@ class _HomeScreenState extends State<HomeScreen> {
     required String sender,
   }) async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+
+      final msgDetection = prefs.getBool(keyMsgDetection) ?? true;
+      final msgScamAlerts = prefs.getBool(keyMsgScamAlerts) ?? true;
+
+      if (!msgDetection) {
+        debugPrint("Message Detection is OFF. SMS ignored.");
+        return;
+      }
+
       final result = await smsModel.predict(message);
 
       final label = result.label;
@@ -149,18 +263,20 @@ class _HomeScreenState extends State<HomeScreen> {
         keywordScore: keywordScore,
       );
 
+      final isRisky =
+          label.toLowerCase() == 'scam' || label.toLowerCase() == 'suspicious';
+
+      final alertShown = isRisky && msgScamAlerts;
+
       final historyId = await saveSmsToHistory(
         sender: sender,
         message: message,
         label: label,
         score: finalConfidence,
+        alertShown: alertShown,
       );
 
-      if (!mounted) return;
-
-      if ((label.toLowerCase() == 'scam' ||
-              label.toLowerCase() == 'suspicious') &&
-          _msgScamAlerts) {
+      if (alertShown) {
         await NotificationService.showScamSmsNotification(
           sender: sender,
           message: message,
@@ -184,51 +300,28 @@ class _HomeScreenState extends State<HomeScreen> {
     required String message,
     required String label,
     required double score,
+    required bool alertShown,
   }) async {
     final isScam = label.toLowerCase() == 'scam';
     final isSuspicious = label.toLowerCase() == 'suspicious';
+    final isRisky = isScam || isSuspicious;
 
     final id = await DatabaseHelper.instance.insertHistory({
       'name': sender,
       'type': 'SMS Message',
       'message': message,
-      'result': isScam || isSuspicious ? 'Scam / Suspicious' : 'Safe / Legit',
+      'result': isRisky ? 'Scam / Suspicious' : 'Safe / Legit',
       'confidence': score,
-      'action': isScam || isSuspicious ? 'Alert Shown' : 'Allowed',
+      'action': isRisky
+          ? (alertShown ? 'Alert Shown' : 'Logged Only')
+          : 'Allowed',
       'category': 'Messages',
-      'safe': isScam || isSuspicious ? 0 : 1,
+      'safe': isRisky ? 0 : 1,
       'dateTime': DateTime.now().toIso8601String(),
     });
 
     debugPrint("✅ Saved SMS to SQLite history with ID: $id");
     return id;
-  }
-
-  void refreshHomeSettings() {
-    _loadState();
-  }
-
-  Future<void> _loadState() async {
-    final prefs = await SharedPreferences.getInstance();
-
-    final activated = prefs.getBool(_prefKey) ?? false;
-    final savedUsername = prefs.getString('username') ?? "Username";
-    final callDetection = prefs.getBool('call_detection') ?? true;
-    final msgDetection = prefs.getBool('msg_detection') ?? true;
-    final callAutoBlock = prefs.getBool('call_auto_block') ?? true;
-    final msgScamAlerts = prefs.getBool('msg_scam_alerts') ?? true;
-
-    if (mounted) {
-      setState(() {
-        _username = savedUsername;
-        _isActivated = activated;
-        _callDetection = callDetection;
-        _msgDetection = msgDetection;
-        _callAutoBlock = callAutoBlock;
-        _msgScamAlerts = msgScamAlerts;
-        _isLoading = false;
-      });
-    }
   }
 
   Future<void> _onActivate() async {
@@ -258,14 +351,22 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
-      await startSmsListener();
+      await prefs.setBool(_prefKey, true);
+      await _loadState();
+    } else {
+      await prefs.setBool(_prefKey, false);
+
+      await _stopSmsListener();
+      await _stopCallDetection();
+
+      if (!mounted) return;
+
+      setState(() {
+        _isActivated = false;
+      });
     }
 
-    await prefs.setBool(_prefKey, newState);
-
     if (!mounted) return;
-
-    setState(() => _isActivated = newState);
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -283,9 +384,9 @@ class _HomeScreenState extends State<HomeScreen> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Column(
+        const Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: const [
+          children: [
             Text(
               "P.A.R.E",
               style: TextStyle(
@@ -361,7 +462,12 @@ class _HomeScreenState extends State<HomeScreen> {
       children: [
         Icon(icon, size: 18, color: primaryBlue),
         const SizedBox(width: 10),
-        Text(text, style: const TextStyle(fontSize: 14, color: Colors.black87)),
+        Expanded(
+          child: Text(
+            text,
+            style: const TextStyle(fontSize: 14, color: Colors.black87),
+          ),
+        ),
       ],
     );
   }
@@ -389,7 +495,7 @@ class _HomeScreenState extends State<HomeScreen> {
           statusText,
           style: TextStyle(
             fontSize: 13,
-            fontWeight: FontWeight.w600,
+            fontWeight: FontWeight.w700,
             color: isOn ? accentBlue : Colors.grey,
           ),
         ),
@@ -401,9 +507,9 @@ class _HomeScreenState extends State<HomeScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
+        const Text(
           "Hello,",
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 38,
             fontWeight: FontWeight.w900,
             color: Colors.black,
@@ -515,13 +621,25 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
               const SizedBox(height: 14),
-              _bulletRow(Icons.phone_in_talk_outlined, "Detect AI scam calls"),
+              _bulletRow(
+                Icons.phone_in_talk_outlined,
+                _callDetection
+                    ? "Detect AI scam calls"
+                    : "Call detection is currently OFF",
+              ),
               const SizedBox(height: 10),
-              _bulletRow(Icons.sms_outlined, "Detect scam SMS messages"),
+              _bulletRow(
+                Icons.sms_outlined,
+                _msgDetection
+                    ? "Detect scam SMS messages"
+                    : "Message detection is currently OFF",
+              ),
               const SizedBox(height: 10),
               _bulletRow(
                 Icons.notifications_active_outlined,
-                "Alert you instantly",
+                _msgScamAlerts
+                    ? "Alert you instantly"
+                    : "Scam message alerts are currently OFF",
               ),
               const SizedBox(height: 16),
               Container(
@@ -535,7 +653,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: const Text(
-                  "No need to press anything again once activated.",
+                  "You can change these options anytime in Settings.",
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 13,
@@ -560,17 +678,17 @@ class _HomeScreenState extends State<HomeScreen> {
         _card(
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
-              Padding(
+            children: [
+              const Padding(
                 padding: EdgeInsets.only(top: 3),
                 child: Icon(Icons.check_circle, color: Colors.green, size: 18),
               ),
-              SizedBox(width: 10),
+              const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
+                    const Text(
                       "Protection Status",
                       style: TextStyle(
                         fontSize: 11,
@@ -579,8 +697,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         letterSpacing: 0.5,
                       ),
                     ),
-                    SizedBox(height: 2),
-                    Text(
+                    const SizedBox(height: 2),
+                    const Text(
                       "Protection is Active",
                       style: TextStyle(
                         fontSize: 15,
@@ -588,10 +706,15 @@ class _HomeScreenState extends State<HomeScreen> {
                         color: Colors.black87,
                       ),
                     ),
-                    SizedBox(height: 4),
+                    const SizedBox(height: 4),
                     Text(
-                      "Calls and messages are being monitored automatically.",
-                      style: TextStyle(fontSize: 12, color: Colors.black45),
+                      _msgDetection || _callDetection
+                          ? "Enabled features are running automatically."
+                          : "Protection is active, but all detection options are turned off.",
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.black45,
+                      ),
                     ),
                   ],
                 ),
@@ -604,7 +727,7 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _cardHeader("Detection", "Detects suspicious activity"),
+              _cardHeader("Detection", "Controls what P.A.R.E checks"),
               const SizedBox(height: 14),
               _statusRow(
                 icon: Icons.phone_in_talk_outlined,
@@ -631,7 +754,7 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               _cardHeader(
                 "Auto Protection",
-                "Automatic blocking and scam alerts",
+                "Controls what P.A.R.E does after detection",
               ),
               const SizedBox(height: 14),
               _statusRow(
@@ -655,7 +778,6 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
         const SizedBox(height: 14),
-        // Replace the Center > TextButton at the bottom of _activeView()
         SizedBox(
           width: double.infinity,
           height: 56,
@@ -685,8 +807,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _smsSubscription?.cancel();
     smsModel.close();
+    callDetectionService.stop();
+    callDetectionService.dispose();
     super.dispose();
   }
 

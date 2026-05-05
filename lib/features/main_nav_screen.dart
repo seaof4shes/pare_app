@@ -19,6 +19,8 @@ class _MainNavScreenState extends State<MainNavScreen> {
   int? _openHistoryId;
   StreamSubscription? _notifSub;
 
+  final GlobalKey<HomeScreenState> _homeKey = GlobalKey<HomeScreenState>();
+
   static const Color primaryBlue = Color(0xFF092C56);
 
   @override
@@ -48,12 +50,16 @@ class _MainNavScreenState extends State<MainNavScreen> {
       _selectedIndex = index;
       if (index != 1) _openHistoryId = null;
     });
+
+    if (index == 0) {
+      _homeKey.currentState?.refreshHomeSettings();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final screens = [
-      const HomeScreen(),
+      HomeScreen(key: _homeKey),
       HistoryScreen(openHistoryId: _openHistoryId),
       const SettingsScreen(),
     ];
