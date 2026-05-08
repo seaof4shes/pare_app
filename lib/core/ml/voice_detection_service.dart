@@ -7,11 +7,16 @@ class VoiceDetectionService {
   Interpreter? _interpreter;
   final VoiceMfccExtractor _extractor = VoiceMfccExtractor();
 
-  static const double _deepfakeThreshold = 0.65;
-  static const double _humanThreshold = 0.45;
-  static const double _silenceThreshold = 0.01;
+  // ── Thresholds ────────────────────────────────────────────────────────────
+  // fakeScore is sigmoid output: 0.0 = real/human, 1.0 = deepfake
+  // Tune these after observing real _debugMode logs.
+  // Start conservative: only flag if model is clearly confident.
+  static const double _deepfakeThreshold = 0.65; // above → AI/Deepfake
+  static const double _humanThreshold = 0.45; // below → Human
+  //                                               between → Uncertain
 
-  // ── Set to false before releasing to production ──
+  static const double _silenceRmsThreshold = 0.01;
+
   static const bool _debugMode = true;
 
   Future<void> loadModel() async {
@@ -23,10 +28,7 @@ class VoiceDetectionService {
   Future<Map<String, dynamic>> analyzeWavFile(String wavPath) async {
     await loadModel();
 
-    // Extract features BEFORE deleting the file
     final features = await _extractor.extractFromWav(wavPath);
-
-    // NOW safe to delete
     await _deleteFile(wavPath);
 
     if (_isSilence(features)) {
@@ -40,25 +42,25 @@ class VoiceDetectionService {
       };
     }
 
+    // Shape: [1, 40, 157, 1]  →  matches model input_shape=(40, 157, 1)
     final input = features.reshape([1, 40, 157, 1]);
     final output = List.filled(1, 0.0).reshape([1, 1]);
 
     _interpreter!.run(input, output);
 
-    final double fakeScore = output[0][0];
+    final double fakeScore = (output[0][0] as num).toDouble();
 
-    // ── DEBUG: log raw score to help tune thresholds ──
     if (_debugMode) {
       log('════════════════════════════════════');
-      log('  RAW fakeScore  : $fakeScore');
-      log('  humanThreshold : <= $_humanThreshold');
-      log('  fakeThreshold  : >= $_deepfakeThreshold');
+      log('  RAW fakeScore      : $fakeScore');
+      log('  humanThreshold     : <= $_humanThreshold');
+      log('  deepfakeThreshold  : >= $_deepfakeThreshold');
       if (fakeScore <= _humanThreshold) {
         log('  → HUMAN');
       } else if (fakeScore >= _deepfakeThreshold) {
         log('  → DEEPFAKE');
       } else {
-        log('  → UNCERTAIN ($_humanThreshold} < score < $_deepfakeThreshold)');
+        log('  → UNCERTAIN');
       }
       log('════════════════════════════════════');
     }
@@ -70,25 +72,25 @@ class VoiceDetectionService {
         'confidence': fakeScore * 100,
         'fakeScore': fakeScore,
         'safe': false,
-        'action': 'Alert Shown',
+        'action': 'Blocked',
       };
     } else if (fakeScore <= _humanThreshold) {
       return {
         'label': 'Human Voice',
         'result': 0,
-        'confidence': (1 - fakeScore) * 100,
+        'confidence': (1.0 - fakeScore) * 100,
         'fakeScore': fakeScore,
         'safe': true,
         'action': 'Allowed',
       };
     } else {
       return {
-        'label': 'Uncertain – possibly human',
-        'result': 0,
-        'confidence': (1 - fakeScore) * 100,
+        'label': 'Suspicious / Possible AI Voice',
+        'result': 1,
+        'confidence': fakeScore * 100,
         'fakeScore': fakeScore,
-        'safe': true,
-        'action': 'Allowed (low confidence)',
+        'safe': false,
+        'action': 'Alert Shown',
       };
     }
   }
@@ -98,17 +100,14 @@ class VoiceDetectionService {
     for (final v in features) {
       sumSq += v * v;
     }
-    final rms = sumSq / features.length;
-    return rms < _silenceThreshold;
+    return (sumSq / features.length) < _silenceRmsThreshold;
   }
 
   Future<void> _deleteFile(String path) async {
     try {
-      final file = File(path);
-      if (await file.exists()) await file.delete();
-    } catch (_) {
-      // ignore cleanup errors
-    }
+      final f = File(path);
+      if (await f.exists()) await f.delete();
+    } catch (_) {}
   }
 
   void close() {

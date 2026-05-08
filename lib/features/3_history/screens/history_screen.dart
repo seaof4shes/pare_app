@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+
 import 'package:pare_app/core/database/database_helper.dart';
+import 'package:pare_app/core/security/local_crypto_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class HistoryScreen extends StatefulWidget {
   final int? openHistoryId;
@@ -36,17 +39,42 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Future<void> _loadHistory() async {
-    final loadedHistory = await DatabaseHelper.instance.getHistory();
+    final prefs = await SharedPreferences.getInstance();
+    final currentPhone = prefs.getString('phone') ?? '';
+
+    final loadedHistory = await DatabaseHelper.instance.getHistory(
+      userPhone: currentPhone,
+    );
+
     if (!mounted) return;
 
+    final decryptedHistory = <Map<String, dynamic>>[];
+
+    for (final data in loadedHistory) {
+      final mutable = Map<String, dynamic>.from(data);
+
+      mutable['message'] = await LocalCryptoService.instance.decryptText(
+        mutable['message']?.toString() ?? '',
+      );
+
+      decryptedHistory.add(mutable);
+    }
+
     setState(() {
-      history = loadedHistory.map((data) {
+      history = decryptedHistory.map((data) {
         final confidenceValue =
             ((data['confidence'] as num?)?.toDouble() ?? 0.0);
-        final confidencePercent = confidenceValue * 100;
+
+        final isCall = (data['category'] ?? '') == 'Calls';
+
+        final confidencePercent = isCall
+            ? confidenceValue
+            : confidenceValue * 100;
 
         final storedAction = (data['action'] as String? ?? '').trim();
+
         String action;
+
         if (storedAction.isNotEmpty) {
           action = storedAction;
         } else if (confidencePercent >= 75) {
@@ -57,9 +85,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
           action = 'Allowed';
         }
 
-        // Derive riskLevel label for display
         final storedRisk = (data['riskLevel'] as String? ?? '').trim();
+
         String riskLevel;
+
         if (storedRisk.isNotEmpty) {
           riskLevel = storedRisk;
         } else if (confidencePercent >= 75) {
@@ -80,7 +109,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           'date': _formatDate(data['dateTime']),
           'result': data['result'] ?? 'Unknown',
           'confidenceRaw': confidencePercent,
-          'confidence': '${confidencePercent.toStringAsFixed(1)}%',
+          'confidence': '${confidencePercent.toStringAsFixed(2)}%',
           'riskLevel': riskLevel,
           'keywordScore': keywordScore,
           'action': action,
@@ -89,21 +118,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
         };
       }).toList();
     });
-
-    if (widget.openHistoryId != null) {
-      final matchedItem = history.firstWhere(
-        (item) => item['id'] == widget.openHistoryId,
-        orElse: () => {},
-      );
-
-      if (matchedItem.isNotEmpty && mounted) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            _showMessageBottomSheet(context, matchedItem);
-          }
-        });
-      }
-    }
   }
 
   String _formatSender(dynamic raw) {
@@ -156,11 +170,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
     switch (action) {
       case 'Blocked':
       case 'Call Blocked':
+      case 'High-Risk Alert Shown':
         bg = const Color(0xFFFFEBEE);
         fg = const Color(0xFFD32F2F);
         icon = Icons.block_rounded;
         break;
       case 'Alert Shown':
+      case 'Suspicious Voice Alert':
+      case 'Alert Shown (Low Confidence)':
         bg = const Color(0xFFFFF3E0);
         fg = const Color(0xFFF57C00);
         icon = Icons.warning_amber_rounded;

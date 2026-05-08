@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:phone_state/phone_state.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:pare_app/core/ml/call_analysis_service.dart';
@@ -20,7 +21,6 @@ class CallDetectionService {
   bool _isDetecting = false;
   bool _hasAnalyzedCurrentCall = false;
 
-  // Track last seen status to deduplicate repeated identical events
   PhoneStateStatus? _lastStatus;
   String? _lastNumber;
 
@@ -33,7 +33,6 @@ class CallDetectionService {
           ? event.number
           : _lastNumber;
 
-      // ── Deduplicate: ignore repeated identical status events ──
       if (status == _lastStatus) return;
       _lastStatus = status;
 
@@ -53,7 +52,7 @@ class CallDetectionService {
         _hasAnalyzedCurrentCall = false;
         _isDetecting = false;
         _lastNumber = null;
-        _lastStatus = null; // reset so next CALL_STARTED is fresh
+        _lastStatus = null;
       }
     });
 
@@ -72,6 +71,59 @@ class CallDetectionService {
     debugPrint('🛑 Call listener stopped');
   }
 
+  Future<String> _getCallerName(String? phoneNumber) async {
+    if (phoneNumber == null || phoneNumber.trim().isEmpty) {
+      return 'Unknown Caller';
+    }
+
+    try {
+      final hasPermission = await FlutterContacts.requestPermission(
+        readonly: true,
+      );
+
+      if (!hasPermission) {
+        debugPrint('❌ Contacts permission denied');
+        return phoneNumber;
+      }
+
+      final contacts = await FlutterContacts.getContacts(withProperties: true);
+
+      final incomingDigits = _normalizeNumber(phoneNumber);
+
+      for (final contact in contacts) {
+        for (final phone in contact.phones) {
+          final contactDigits = _normalizeNumber(phone.number);
+
+          if (contactDigits.isEmpty) continue;
+
+          if (incomingDigits.endsWith(contactDigits) ||
+              contactDigits.endsWith(incomingDigits)) {
+            final name = contact.displayName.trim();
+
+            if (name.isNotEmpty) {
+              return name;
+            }
+          }
+        }
+      }
+
+      return phoneNumber;
+    } catch (e) {
+      debugPrint('❌ Contact lookup error: $e');
+      return phoneNumber;
+    }
+  }
+
+  String _normalizeNumber(String number) {
+    var digits = number.replaceAll(RegExp(r'\D'), '');
+
+    if (digits.startsWith('63') && digits.length >= 12) {
+      digits = '0${digits.substring(2)}';
+    }
+
+    return digits;
+  }
+
   Future<void> _handleIncomingCall(String? phoneNumber) async {
     if (_isDetecting) return;
 
@@ -84,25 +136,22 @@ class CallDetectionService {
     _isDetecting = true;
 
     try {
-      debugPrint(
-        '📞 Incoming call detected: ${phoneNumber ?? "Unknown Number"}',
-      );
+      final callerNumber = phoneNumber ?? 'Unknown Number';
+      final callerName = await _getCallerName(phoneNumber);
+
+      debugPrint('📞 Incoming call detected: $callerName ($callerNumber)');
       debugPrint('🔍 Starting automatic call detection...');
 
-      // Wait for the call to be answered and audio routing to stabilise.
-      // 5 s is the minimum reliable delay on most Android devices before
-      // the microphone input reflects actual call audio rather than silence.
       await Future.delayed(const Duration(seconds: 5));
 
-      // Bail out if the call already ended while we were waiting
       if (!_hasAnalyzedCurrentCall) {
         debugPrint('📞 Call ended before analysis could start. Skipping.');
         return;
       }
 
       final result = await _callAnalysisService.analyzeCall(
-        callerName: 'Incoming Caller',
-        callerNumber: phoneNumber ?? 'Unknown Number',
+        callerName: callerName,
+        callerNumber: callerNumber,
       );
 
       if (result == null) {
@@ -114,6 +163,36 @@ class CallDetectionService {
       debugPrint('Confidence: ${result['confidence']}');
     } catch (e) {
       debugPrint('❌ Call detection error: $e');
+    } finally {
+      _isDetecting = false;
+    }
+  }
+
+  Future<Map<String, dynamic>?> runVoiceDemoTest() async {
+    if (_isDetecting) return null;
+
+    _isDetecting = true;
+
+    try {
+      debugPrint('🎤 Starting manual voice detection demo...');
+
+      final result = await _callAnalysisService.analyzeCall(
+        callerName: 'Voice Demo Test',
+        callerNumber: 'Microphone Demo',
+      );
+
+      if (result == null) {
+        debugPrint('❌ Voice demo cancelled or permission denied');
+        return null;
+      }
+
+      debugPrint('🎤 Voice Demo Result: ${result['label']}');
+      debugPrint('Confidence: ${result['confidence']}');
+
+      return result;
+    } catch (e) {
+      debugPrint('❌ Voice demo error: $e');
+      return null;
     } finally {
       _isDetecting = false;
     }

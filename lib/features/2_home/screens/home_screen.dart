@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:pare_app/services/notification_service.dart';
+import 'package:pare_app/core/security/local_crypto_service.dart';
 
 import 'package:pare_app/core/database/database_helper.dart';
 import 'package:pare_app/core/permissions/permission_service.dart';
@@ -274,6 +275,8 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         label: label,
         score: finalConfidence,
         alertShown: alertShown,
+        keywordScore: keywordScore,
+        riskLevel: risk,
       );
 
       if (alertShown) {
@@ -301,15 +304,21 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     required String label,
     required double score,
     required bool alertShown,
+    required int keywordScore,
+    required String riskLevel,
   }) async {
     final isScam = label.toLowerCase() == 'scam';
     final isSuspicious = label.toLowerCase() == 'suspicious';
     final isRisky = isScam || isSuspicious;
 
+    final prefs = await SharedPreferences.getInstance();
+    final currentPhone = prefs.getString('phone') ?? '';
+
     final id = await DatabaseHelper.instance.insertHistory({
+      'userPhone': currentPhone,
       'name': sender,
       'type': 'SMS Message',
-      'message': message,
+      'message': await LocalCryptoService.instance.encryptText(message),
       'result': isRisky ? 'Scam / Suspicious' : 'Safe / Legit',
       'confidence': score,
       'action': isRisky
@@ -317,6 +326,8 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           : 'Allowed',
       'category': 'Messages',
       'safe': isRisky ? 0 : 1,
+      'keywordScore': keywordScore,
+      'riskLevel': riskLevel,
       'dateTime': DateTime.now().toIso8601String(),
     });
 
@@ -376,6 +387,48 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         backgroundColor: newState
             ? Colors.green.shade700
             : Colors.grey.shade700,
+      ),
+    );
+  }
+
+  Future<void> _onTestVoiceDetection() async {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text("Recording voice for 6 seconds...")),
+    );
+
+    final result = await callDetectionService.runVoiceDemoTest();
+
+    if (!mounted) return;
+
+    if (result == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Voice detection failed. Please try again."),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    final label = result['label']?.toString() ?? 'Unknown';
+    final confidence = result['confidence'] ?? 0.0;
+    final action = result['action']?.toString() ?? 'Logged';
+
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text("Voice Detection Result"),
+        content: Text(
+          "Result: $label\n"
+          "Confidence: $confidence%\n"
+          "Action: $action",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("OK"),
+          ),
+        ],
       ),
     );
   }
@@ -777,7 +830,35 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             ],
           ),
         ),
+
         const SizedBox(height: 14),
+
+        SizedBox(
+          width: double.infinity,
+          height: 56,
+          child: ElevatedButton.icon(
+            onPressed: _onTestVoiceDetection,
+            icon: const Icon(Icons.mic, color: Colors.white),
+            label: const Text(
+              "TEST VOICE DETECTION",
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w900,
+                color: Colors.white,
+                letterSpacing: 0.7,
+              ),
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: primaryBlue,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+            ),
+          ),
+        ),
+
+        const SizedBox(height: 12),
+
         SizedBox(
           width: double.infinity,
           height: 56,
