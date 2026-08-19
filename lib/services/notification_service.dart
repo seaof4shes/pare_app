@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -13,6 +14,10 @@ class NotificationService {
 
   static Stream<String> get onNotificationTap =>
       notificationTapController.stream;
+
+  // Stores notification payload when the app is launched
+  // by tapping a notification.
+  static String? _pendingNotificationPayload;
 
   static Future<void> init() async {
     const AndroidInitializationSettings androidSettings =
@@ -28,26 +33,43 @@ class NotificationService {
         final payload = response.payload;
 
         if (payload != null && payload.isNotEmpty) {
+          debugPrint("🔔 Notification tapped: $payload");
+
+          // Save it in case the navigation screen needs it.
+          _pendingNotificationPayload = payload;
+
+          // Notify listeners when the app is already running.
           notificationTapController.add(payload);
         }
       },
     );
 
+    // Request notification permission.
     await Permission.notification.request();
 
-    // 🔥 ADD THIS PART
+    // Check whether the app was launched by tapping
+    // a notification while the app was completely closed.
     final launchDetails = await _notifications
         .getNotificationAppLaunchDetails();
 
-    final payload = launchDetails?.notificationResponse?.payload;
+    if (launchDetails?.didNotificationLaunchApp == true) {
+      final payload = launchDetails?.notificationResponse?.payload;
 
-    if (launchDetails?.didNotificationLaunchApp == true &&
-        payload != null &&
-        payload.isNotEmpty) {
-      Future.delayed(const Duration(milliseconds: 500), () {
-        notificationTapController.add(payload);
-      });
+      if (payload != null && payload.isNotEmpty) {
+        debugPrint("🚀 App launched from notification: $payload");
+
+        _pendingNotificationPayload = payload;
+      }
     }
+  }
+
+  // Gets the pending notification payload and clears it.
+  static String? consumePendingNotificationPayload() {
+    final payload = _pendingNotificationPayload;
+
+    _pendingNotificationPayload = null;
+
+    return payload;
   }
 
   static Future<void> showScamSmsNotification({
@@ -81,8 +103,10 @@ class NotificationService {
     final title = isHighRisk ? '⚠️ SCAM ALERT' : '⚠️ BE CAREFUL';
 
     final body = isHighRisk
-        ? 'This message may be dangerous.\nDo NOT click links or share information.'
-        : 'This message looks suspicious.\nTap to check details.';
+        ? 'This message may be dangerous.\n'
+              'Do NOT click links or share information.'
+        : 'This message looks suspicious.\n'
+              'Tap to check details.';
 
     await _notifications.show(
       DateTime.now().millisecondsSinceEpoch ~/ 1000,
@@ -91,5 +115,9 @@ class NotificationService {
       details,
       payload: payload,
     );
+  }
+
+  static void dispose() {
+    notificationTapController.close();
   }
 }

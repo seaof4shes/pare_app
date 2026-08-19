@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'package:pare_app/core/database/database_helper.dart';
 import 'package:pare_app/core/security/local_crypto_service.dart';
@@ -13,19 +14,32 @@ class HistoryScreen extends StatefulWidget {
   State<HistoryScreen> createState() => _HistoryScreenState();
 }
 
-class _HistoryScreenState extends State<HistoryScreen> {
+class _HistoryScreenState extends State<HistoryScreen>
+    with WidgetsBindingObserver {
   int selectedFilter = 0;
 
   static const Color primaryBlue = Color(0xFF092C56);
   static const Color cardColor = Color(0xFFEFF4F3);
   static const Color backgroundColor = Color(0xFFF7F8FA);
 
+  static const MethodChannel _blockChannel = MethodChannel(
+    'pare_app/block_sender',
+  );
+
   List<Map<String, dynamic>> history = [];
 
   @override
   void initState() {
     super.initState();
+
+    WidgetsBinding.instance.addObserver(this);
+
     _loadHistory();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Nothing needed here for the block flow.
   }
 
   @override
@@ -36,6 +50,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
         widget.openHistoryId != null) {
       _loadHistory();
     }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
   }
 
   Future<void> _loadHistory() async {
@@ -60,64 +80,216 @@ class _HistoryScreenState extends State<HistoryScreen> {
       decryptedHistory.add(mutable);
     }
 
+    final convertedHistory = decryptedHistory.map((data) {
+      final confidenceValue = ((data['confidence'] as num?)?.toDouble() ?? 0.0);
+
+      final isCall = (data['category'] ?? '') == 'Calls';
+
+      final confidencePercent = isCall
+          ? confidenceValue
+          : confidenceValue * 100;
+
+      final storedAction = (data['action'] as String? ?? '').trim();
+
+      String action;
+
+      if (storedAction.isNotEmpty) {
+        action = storedAction;
+      } else if (confidencePercent >= 75) {
+        action = 'Blocked';
+      } else if (confidencePercent >= 40) {
+        action = 'Alert Shown';
+      } else {
+        action = 'Allowed';
+      }
+
+      final storedRisk = (data['riskLevel'] as String? ?? '').trim();
+
+      String riskLevel;
+
+      if (storedRisk.isNotEmpty) {
+        riskLevel = storedRisk;
+      } else if (confidencePercent >= 75) {
+        riskLevel = 'HIGH';
+      } else if (confidencePercent >= 40) {
+        riskLevel = 'MEDIUM';
+      } else {
+        riskLevel = 'LOW';
+      }
+
+      final keywordScore = data['keywordScore'] as int? ?? 0;
+
+      return {
+        'id': data['id'],
+        'name': _formatSender(data['name']),
+        'senderNumber': data['senderNumber']?.toString() ?? '',
+        'type': data['type'] ?? 'SMS Message',
+        'message': data['message'] ?? '',
+        'date': _formatDate(data['dateTime']),
+        'result': data['result'] ?? 'Unknown',
+        'confidenceRaw': confidencePercent,
+        'confidence': '${confidencePercent.toStringAsFixed(2)}%',
+        'riskLevel': riskLevel,
+        'keywordScore': keywordScore,
+        'action': action,
+        'category': data['category'] ?? 'Messages',
+        'safe': data['safe'] == 1,
+      };
+    }).toList();
+
+    if (!mounted) return;
+
     setState(() {
-      history = decryptedHistory.map((data) {
-        final confidenceValue =
-            ((data['confidence'] as num?)?.toDouble() ?? 0.0);
-
-        final isCall = (data['category'] ?? '') == 'Calls';
-
-        final confidencePercent = isCall
-            ? confidenceValue
-            : confidenceValue * 100;
-
-        final storedAction = (data['action'] as String? ?? '').trim();
-
-        String action;
-
-        if (storedAction.isNotEmpty) {
-          action = storedAction;
-        } else if (confidencePercent >= 75) {
-          action = 'Blocked';
-        } else if (confidencePercent >= 40) {
-          action = 'Alert Shown';
-        } else {
-          action = 'Allowed';
-        }
-
-        final storedRisk = (data['riskLevel'] as String? ?? '').trim();
-
-        String riskLevel;
-
-        if (storedRisk.isNotEmpty) {
-          riskLevel = storedRisk;
-        } else if (confidencePercent >= 75) {
-          riskLevel = 'HIGH';
-        } else if (confidencePercent >= 40) {
-          riskLevel = 'MEDIUM';
-        } else {
-          riskLevel = 'LOW';
-        }
-
-        final keywordScore = data['keywordScore'] as int? ?? 0;
-
-        return {
-          'id': data['id'],
-          'name': _formatSender(data['name']),
-          'type': data['type'] ?? 'SMS Message',
-          'message': data['message'] ?? '',
-          'date': _formatDate(data['dateTime']),
-          'result': data['result'] ?? 'Unknown',
-          'confidenceRaw': confidencePercent,
-          'confidence': '${confidencePercent.toStringAsFixed(2)}%',
-          'riskLevel': riskLevel,
-          'keywordScore': keywordScore,
-          'action': action,
-          'category': data['category'] ?? 'Messages',
-          'safe': data['safe'] == 1,
-        };
-      }).toList();
+      history = convertedHistory;
     });
+
+    // ⭐ NEW:
+    // If this HistoryScreen was opened from a notification,
+    // automatically open that specific history record.
+    if (widget.openHistoryId != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _openHistoryRecord(widget.openHistoryId!);
+      });
+    }
+  }
+
+  void _openHistoryRecord(int historyId) {
+    final index = history.indexWhere((item) => item['id'] == historyId);
+
+    if (index == -1) {
+      debugPrint("⚠️ History record with ID $historyId was not found.");
+      return;
+    }
+
+    final item = history[index];
+
+    debugPrint("📖 Opening history record ID: $historyId");
+
+    // Automatically switch to Messages filter
+    // when the notification came from an SMS.
+    if (item['category'] == 'Messages') {
+      setState(() {
+        selectedFilter = 2;
+      });
+    }
+
+    // Wait for the HistoryScreen to finish building.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+
+      _showMessageBottomSheet(context, item);
+    });
+  }
+
+  Future<void> _openBlockReportSpamFlow(Map<String, dynamic> item) async {
+    final senderNumber = (item['senderNumber'] ?? '').toString().trim();
+
+    if (senderNumber.isEmpty) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('The sender number is unavailable for this record.'),
+        ),
+      );
+
+      return;
+    }
+
+    final shouldContinue = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+
+        title: const Text(
+          'Block Sender?',
+          style: TextStyle(fontWeight: FontWeight.w800),
+        ),
+
+        content: Text(
+          'P.A.R.E. will open your messaging app '
+          'to this sender.\n\n'
+          'Sender: ${_formatSender(senderNumber)}\n\n'
+          'Select "Block" or "Block & report spam" '
+          'in your messaging app to block this sender.',
+        ),
+
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context, false);
+            },
+            child: const Text('CANCEL'),
+          ),
+
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context, true);
+            },
+
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFD32F2F),
+              foregroundColor: Colors.white,
+            ),
+
+            child: const Text('OPEN MESSAGES'),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldContinue != true) {
+      return;
+    }
+
+    final historyId = item['id'] as int;
+
+    try {
+      // Save that P.A.R.E. opened the messaging app
+      // for the user to manually block the sender.
+      await DatabaseHelper.instance.updateHistoryAction(
+        historyId: historyId,
+        action: 'Message Opened for Blocking',
+        userPhone: await _getCurrentPhone(),
+      );
+
+      await _loadHistory();
+
+      // Open the sender's SMS conversation.
+      await _blockChannel.invokeMethod('openSmsConversation', {
+        'sender': senderNumber,
+      });
+    } on PlatformException catch (e) {
+      debugPrint(
+        '❌ Block flow error: '
+        '${e.code} - ${e.message}',
+      );
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            e.message ?? 'Unable to open the messaging application.',
+          ),
+        ),
+      );
+    } catch (e) {
+      debugPrint('❌ Unexpected block flow error: $e');
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Unable to open the messaging application.'),
+        ),
+      );
+    }
+  }
+
+  Future<String> _getCurrentPhone() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('phone') ?? '';
   }
 
   String _formatSender(dynamic raw) {
@@ -181,6 +353,22 @@ class _HistoryScreenState extends State<HistoryScreen> {
         bg = const Color(0xFFFFF3E0);
         fg = const Color(0xFFF57C00);
         icon = Icons.warning_amber_rounded;
+        break;
+      case 'Block/Report Spam Opened':
+        bg = const Color(0xFFFFEBEE);
+        fg = const Color(0xFFD32F2F);
+        icon = Icons.block_rounded;
+        break;
+      case 'Message Opened for Blocking':
+        bg = const Color(0xFFFFEBEE);
+        fg = const Color(0xFFD32F2F);
+        icon = Icons.block_rounded;
+        break;
+
+      case 'Sender Blocked':
+        bg = const Color(0xFFE8F5E9);
+        fg = const Color(0xFF2E7D32);
+        icon = Icons.check_circle_rounded;
         break;
       default:
         bg = const Color(0xFFE8F5E9);
@@ -499,6 +687,89 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         ),
                       ),
 
+                      if (item['category'] == 'Messages' &&
+                          item['riskLevel'] == 'HIGH') ...[
+                        const SizedBox(height: 12),
+
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFFEBEE),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFFFFCDD2)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Row(
+                                children: [
+                                  Icon(
+                                    Icons.warning_amber_rounded,
+                                    color: Color(0xFFD32F2F),
+                                    size: 20,
+                                  ),
+                                  SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      'High-Risk Message',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w800,
+                                        color: Color(0xFFD32F2F),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+
+                              const SizedBox(height: 7),
+
+                              const Text(
+                                'You can block or report this sender through '
+                                'your messaging app.',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.black54,
+                                  height: 1.4,
+                                ),
+                              ),
+
+                              const SizedBox(height: 12),
+
+                              SizedBox(
+                                width: double.infinity,
+                                height: 48,
+                                child: ElevatedButton.icon(
+                                  onPressed: () {
+                                    _openBlockReportSpamFlow(item);
+                                  },
+                                  icon: const Icon(
+                                    Icons.block_rounded,
+                                    size: 19,
+                                  ),
+                                  label: const Text(
+                                    'BLOCK SENDER',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w900,
+                                      letterSpacing: 0.4,
+                                    ),
+                                  ),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFFD32F2F),
+                                    foregroundColor: Colors.white,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+
                       const SizedBox(height: 8),
                     ],
                   ),
@@ -542,7 +813,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
       ),
     );
     if (confirm == true) {
-      await DatabaseHelper.instance.clearHistory();
+      final currentPhone = await _getCurrentPhone();
+
+      await DatabaseHelper.instance.clearHistory(userPhone: currentPhone);
+
       await _loadHistory();
     }
   }

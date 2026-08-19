@@ -9,7 +9,9 @@ class DatabaseHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
+
     _database = await _initDB('pare_local.db');
+
     return _database!;
   }
 
@@ -19,7 +21,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: _createDB,
       onUpgrade: _upgradeDB,
     );
@@ -31,6 +33,7 @@ class DatabaseHelper {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         userPhone TEXT NOT NULL DEFAULT '',
         name TEXT NOT NULL,
+        senderNumber TEXT NOT NULL DEFAULT '',
         type TEXT NOT NULL,
         message TEXT,
         result TEXT NOT NULL,
@@ -48,23 +51,37 @@ class DatabaseHelper {
   Future<void> _upgradeDB(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
       await db.execute(
-        "ALTER TABLE detection_history ADD COLUMN keywordScore INTEGER DEFAULT 0",
+        "ALTER TABLE detection_history "
+        "ADD COLUMN keywordScore INTEGER DEFAULT 0",
       );
 
       await db.execute(
-        "ALTER TABLE detection_history ADD COLUMN riskLevel TEXT DEFAULT 'LOW'",
+        "ALTER TABLE detection_history "
+        "ADD COLUMN riskLevel TEXT DEFAULT 'LOW'",
       );
     }
 
     if (oldVersion < 3) {
       await db.execute(
-        "ALTER TABLE detection_history ADD COLUMN userPhone TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE detection_history "
+        "ADD COLUMN userPhone TEXT NOT NULL DEFAULT ''",
+      );
+    }
+
+    // Version 4:
+    // Store the actual SMS sender number separately
+    // from the display/contact name.
+    if (oldVersion < 4) {
+      await db.execute(
+        "ALTER TABLE detection_history "
+        "ADD COLUMN senderNumber TEXT NOT NULL DEFAULT ''",
       );
     }
   }
 
   Future<int> insertHistory(Map<String, dynamic> data) async {
     final db = await instance.database;
+
     return await db.insert('detection_history', data);
   }
 
@@ -83,6 +100,32 @@ class DatabaseHelper {
     return await db.query('detection_history', orderBy: 'id DESC');
   }
 
+  Future<int> updateHistoryAction({
+    required int historyId,
+    required String action,
+    String? userPhone,
+  }) async {
+    final db = await instance.database;
+
+    final values = <String, dynamic>{'action': action};
+
+    if (userPhone != null && userPhone.trim().isNotEmpty) {
+      return await db.update(
+        'detection_history',
+        values,
+        where: 'id = ? AND userPhone = ?',
+        whereArgs: [historyId, userPhone],
+      );
+    }
+
+    return await db.update(
+      'detection_history',
+      values,
+      where: 'id = ?',
+      whereArgs: [historyId],
+    );
+  }
+
   Future<void> clearHistory({String? userPhone}) async {
     final db = await instance.database;
 
@@ -92,13 +135,15 @@ class DatabaseHelper {
         where: 'userPhone = ?',
         whereArgs: [userPhone],
       );
+
       return;
     }
 
     await db.delete('detection_history');
 
     await db.rawDelete(
-      "DELETE FROM sqlite_sequence WHERE name='detection_history'",
+      "DELETE FROM sqlite_sequence "
+      "WHERE name='detection_history'",
     );
   }
 }

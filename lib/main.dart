@@ -5,13 +5,20 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'firebase_options.dart';
 import 'features/1_auth/screens/login_screen.dart';
 import 'features/main_nav_screen.dart';
+import 'services/notification_service.dart';
 
-void main() async {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Initialize Firebase.
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
+  // Initialize local notifications BEFORE runApp().
+  await NotificationService.init();
+
+  // Check whether the user is already logged in.
   final prefs = await SharedPreferences.getInstance();
+
   final phone = prefs.getString('phone');
 
   runApp(PAREApp(isLoggedIn: phone != null));
@@ -26,6 +33,7 @@ class PAREApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
+
       home: isLoggedIn ? const MainNavScreen() : const LoginScreen(),
     );
   }

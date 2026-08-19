@@ -147,8 +147,13 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       (event) async {
         final data = Map<String, dynamic>.from(event);
 
-        final sender = data['sender']?.toString() ?? 'Unknown';
+        final senderNumber = data['senderNumber']?.toString() ?? 'Unknown';
+
+        final senderName = data['senderName']?.toString() ?? '';
+
         final smsBody = data['body']?.toString() ?? '';
+
+        final sender = senderName.isNotEmpty ? senderName : senderNumber;
 
         debugPrint("📩 NATIVE SMS RECEIVED");
         debugPrint("Sender: $sender");
@@ -176,7 +181,11 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           return;
         }
 
-        await detectIncomingSms(message: smsBody, sender: sender);
+        await detectIncomingSms(
+          message: smsBody,
+          sender: sender,
+          senderNumber: senderNumber,
+        );
       },
       onError: (error) {
         debugPrint("❌ Native SMS listener error: $error");
@@ -240,6 +249,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> detectIncomingSms({
     required String message,
     required String sender,
+    required String senderNumber,
   }) async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -271,6 +281,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
       final historyId = await saveSmsToHistory(
         sender: sender,
+        senderNumber: senderNumber,
         message: message,
         label: label,
         score: finalConfidence,
@@ -300,6 +311,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<int> saveSmsToHistory({
     required String sender,
+    required String senderNumber,
     required String message,
     required String label,
     required double score,
@@ -317,6 +329,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final id = await DatabaseHelper.instance.insertHistory({
       'userPhone': currentPhone,
       'name': sender,
+      'senderNumber': senderNumber,
       'type': 'SMS Message',
       'message': await LocalCryptoService.instance.encryptText(message),
       'result': isRisky ? 'Scam / Suspicious' : 'Safe / Legit',
