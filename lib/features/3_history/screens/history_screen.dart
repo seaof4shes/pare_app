@@ -107,9 +107,9 @@ class _HistoryScreenState extends State<HistoryScreen>
     final convertedHistory = decryptedHistory.map((data) {
       final confidenceValue = ((data['confidence'] as num?)?.toDouble() ?? 0.0);
 
-      final isCall = (data['category'] ?? '') == 'Audio';
+      final isAudio = (data['category'] ?? '') == 'Audio';
 
-      final confidencePercent = isCall
+      final confidencePercent = isAudio
           ? confidenceValue
           : confidenceValue * 100;
 
@@ -223,7 +223,6 @@ class _HistoryScreenState extends State<HistoryScreen>
       context: context,
       builder: (_) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-
         title: Row(
           children: const [
             Icon(Icons.block_rounded, color: dangerColor),
@@ -234,7 +233,6 @@ class _HistoryScreenState extends State<HistoryScreen>
             ),
           ],
         ),
-
         content: Text(
           'P.A.R.E. will open your messaging app '
           'to this sender.\n\n'
@@ -243,7 +241,6 @@ class _HistoryScreenState extends State<HistoryScreen>
           'in your messaging app to block this sender.',
           style: const TextStyle(color: mutedColor, fontSize: 13, height: 1.4),
         ),
-
         actions: [
           TextButton(
             onPressed: () {
@@ -254,12 +251,10 @@ class _HistoryScreenState extends State<HistoryScreen>
               style: TextStyle(color: mutedColor, fontWeight: FontWeight.w700),
             ),
           ),
-
           ElevatedButton(
             onPressed: () {
               Navigator.pop(context, true);
             },
-
             style: ElevatedButton.styleFrom(
               backgroundColor: dangerColor,
               foregroundColor: Colors.white,
@@ -268,7 +263,6 @@ class _HistoryScreenState extends State<HistoryScreen>
                 borderRadius: BorderRadius.circular(10),
               ),
             ),
-
             child: const Text(
               'OPEN MESSAGES',
               style: TextStyle(fontWeight: FontWeight.w800),
@@ -334,24 +328,37 @@ class _HistoryScreenState extends State<HistoryScreen>
 
   String _formatSender(dynamic raw) {
     if (raw == null) return '+63 000 000 0000';
+
     final s = raw.toString().trim();
+
     if (s.isEmpty) return '+63 000 000 0000';
+
     if (s.contains(RegExp(r'[a-zA-Z]'))) return s;
 
     final digits = s.replaceAll(RegExp(r'\D'), '');
+
     if (digits.length == 10 && digits.startsWith('9')) {
-      return '+63 ${digits.substring(0, 3)} ${digits.substring(3, 6)} ${digits.substring(6)}';
+      return '+63 ${digits.substring(0, 3)} '
+          '${digits.substring(3, 6)} '
+          '${digits.substring(6)}';
     } else if (digits.length == 11 && digits.startsWith('09')) {
-      return '+63 ${digits.substring(1, 4)} ${digits.substring(4, 7)} ${digits.substring(7)}';
+      return '+63 ${digits.substring(1, 4)} '
+          '${digits.substring(4, 7)} '
+          '${digits.substring(7)}';
     } else if (digits.length == 12 && digits.startsWith('63')) {
-      return '+63 ${digits.substring(2, 5)} ${digits.substring(5, 8)} ${digits.substring(8)}';
+      return '+63 ${digits.substring(2, 5)} '
+          '${digits.substring(5, 8)} '
+          '${digits.substring(8)}';
     }
+
     return s;
   }
 
   String _formatDate(dynamic rawDate) {
     if (rawDate == null) return 'Unknown date';
+
     final date = DateTime.tryParse(rawDate.toString());
+
     if (date == null) return 'Unknown date';
 
     final hour = date.hour > 12
@@ -359,10 +366,12 @@ class _HistoryScreenState extends State<HistoryScreen>
         : date.hour == 0
         ? 12
         : date.hour;
+
     final minute = date.minute.toString().padLeft(2, '0');
     final period = date.hour >= 12 ? 'PM' : 'AM';
 
-    return '${date.month}/${date.day}/${date.year} - $hour:$minute $period';
+    return '${date.month}/${date.day}/${date.year} - '
+        '$hour:$minute $period';
   }
 
   Color _confidenceColor(double percent, bool safe) {
@@ -372,7 +381,7 @@ class _HistoryScreenState extends State<HistoryScreen>
     return successColor;
   }
 
-  // ─── Shared UI pieces (mirrored from HomeScreen) ──────────────────────────────
+  // ─── Shared UI pieces ────────────────────────────────────────────────────────
 
   Widget _header() {
     final initial = _username.isNotEmpty ? _username[0].toUpperCase() : "U";
@@ -448,6 +457,7 @@ class _HistoryScreenState extends State<HistoryScreen>
 
   Widget _iconBadge(IconData icon, {Color? tint}) {
     final color = tint ?? primaryBlue;
+
     return Container(
       width: 34,
       height: 34,
@@ -477,16 +487,19 @@ class _HistoryScreenState extends State<HistoryScreen>
         fg = dangerColor;
         icon = Icons.block_rounded;
         break;
+
       case 'Alert Shown':
       case 'Suspicious Voice Alert':
       case 'Alert Shown (Low Confidence)':
         fg = warningColor;
         icon = Icons.warning_amber_rounded;
         break;
+
       case 'Sender Blocked':
         fg = successColor;
         icon = Icons.check_circle_rounded;
         break;
+
       default:
         fg = successColor;
         icon = Icons.check_circle_outline_rounded;
@@ -516,7 +529,7 @@ class _HistoryScreenState extends State<HistoryScreen>
     );
   }
 
-  // ─── Risk level badge (shown only in bottom sheet) ────────────────────────────
+  // ─── Risk level badge ────────────────────────────────────────────────────────
 
   Widget _riskBadge(String riskLevel) {
     Color fg;
@@ -527,10 +540,12 @@ class _HistoryScreenState extends State<HistoryScreen>
         fg = dangerColor;
         label = 'High Risk';
         break;
+
       case 'MEDIUM':
         fg = warningColor;
         label = 'Medium Risk';
         break;
+
       default:
         fg = successColor;
         label = 'Low Risk';
@@ -549,7 +564,7 @@ class _HistoryScreenState extends State<HistoryScreen>
     );
   }
 
-  // ─── Detail row for bottom sheet ──────────────────────────────────────────────
+  // ─── Detail row ──────────────────────────────────────────────────────────────
 
   Widget _detailRow(String label, Widget value) {
     return Padding(
@@ -581,8 +596,16 @@ class _HistoryScreenState extends State<HistoryScreen>
     Map<String, dynamic> item,
   ) {
     final double confidenceRaw = item['confidenceRaw'] as double;
+
     final bool safe = item['safe'];
+
     final int keywordScore = item['keywordScore'] as int? ?? 0;
+
+    // Audio uses "Confidence".
+    // SMS/Message detection uses "Detection Score".
+    final String scoreLabel = item['category'] == 'Audio'
+        ? 'Confidence'
+        : 'Detection Score';
 
     showModalBottomSheet(
       context: context,
@@ -613,14 +636,15 @@ class _HistoryScreenState extends State<HistoryScreen>
                   ),
                 ),
               ),
+
               const SizedBox(height: 18),
 
-              // Sender row
+              // Sender / file row
               Row(
                 children: [
                   _iconBadge(
                     item['category'] == 'Audio'
-                        ? Icons.phone_rounded
+                        ? Icons.mic_rounded
                         : Icons.sms_rounded,
                     tint: accentBlue,
                   ),
@@ -651,7 +675,9 @@ class _HistoryScreenState extends State<HistoryScreen>
               ),
 
               const SizedBox(height: 16),
+
               _divider(),
+
               const SizedBox(height: 16),
 
               // Scrollable content
@@ -671,7 +697,9 @@ class _HistoryScreenState extends State<HistoryScreen>
                           letterSpacing: 0.4,
                         ),
                       ),
+
                       const SizedBox(height: 8),
+
                       Container(
                         width: double.infinity,
                         padding: const EdgeInsets.all(14),
@@ -704,6 +732,7 @@ class _HistoryScreenState extends State<HistoryScreen>
                           letterSpacing: 0.4,
                         ),
                       ),
+
                       const SizedBox(height: 12),
 
                       _detailRow(
@@ -718,12 +747,14 @@ class _HistoryScreenState extends State<HistoryScreen>
                               color: safe ? successColor : dangerColor,
                             ),
                             const SizedBox(width: 5),
-                            Text(
-                              item['result'],
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w700,
-                                color: safe ? successColor : dangerColor,
+                            Expanded(
+                              child: Text(
+                                item['result'],
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                  color: safe ? successColor : dangerColor,
+                                ),
                               ),
                             ),
                           ],
@@ -734,8 +765,12 @@ class _HistoryScreenState extends State<HistoryScreen>
 
                       _detailRow('Action Taken', _actionBadge(item['action'])),
 
+                      // =====================================================
+                      // Audio = Confidence
+                      // SMS   = Detection Score
+                      // =====================================================
                       _detailRow(
-                        'Confidence',
+                        scoreLabel,
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -750,7 +785,9 @@ class _HistoryScreenState extends State<HistoryScreen>
                                 ),
                               ),
                             ),
+
                             const SizedBox(height: 4),
+
                             Text(
                               item['confidence'],
                               style: TextStyle(
@@ -763,17 +800,20 @@ class _HistoryScreenState extends State<HistoryScreen>
                         ),
                       ),
 
-                      _detailRow(
-                        'Keyword Score',
-                        Text(
-                          '$keywordScore ${keywordScore == 1 ? 'point' : 'points'}',
-                          style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: inkColor,
+                      // Keyword Score is mainly meaningful for SMS.
+                      if (item['category'] != 'Audio')
+                        _detailRow(
+                          'Keyword Score',
+                          Text(
+                            '$keywordScore '
+                            '${keywordScore == 1 ? 'point' : 'points'}',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: inkColor,
+                            ),
                           ),
                         ),
-                      ),
 
                       _detailRow(
                         'Type',
@@ -828,8 +868,8 @@ class _HistoryScreenState extends State<HistoryScreen>
                               const SizedBox(height: 7),
 
                               const Text(
-                                'You can block or report this sender through '
-                                'your messaging app.',
+                                'You can block or report this '
+                                'sender through your messaging app.',
                                 style: TextStyle(
                                   fontSize: 12,
                                   color: mutedColor,
@@ -903,8 +943,8 @@ class _HistoryScreenState extends State<HistoryScreen>
           ],
         ),
         content: const Text(
-          'This will permanently delete all scam detection records. '
-          'This action cannot be undone.',
+          'This will permanently delete all scam detection '
+          'records. This action cannot be undone.',
           style: TextStyle(color: mutedColor, fontSize: 13, height: 1.4),
         ),
         actions: [
@@ -925,6 +965,7 @@ class _HistoryScreenState extends State<HistoryScreen>
         ],
       ),
     );
+
     if (confirm == true) {
       final currentPhone = await _getCurrentPhone();
 
@@ -940,9 +981,11 @@ class _HistoryScreenState extends State<HistoryScreen>
     if (selectedFilter == 1) {
       return history.where((item) => item['category'] == 'Audio').toList();
     }
+
     if (selectedFilter == 2) {
       return history.where((item) => item['category'] == 'Messages').toList();
     }
+
     return history;
   }
 
@@ -950,6 +993,7 @@ class _HistoryScreenState extends State<HistoryScreen>
 
   Widget _filterButton(String text, int index) {
     final selected = selectedFilter == index;
+
     return Expanded(
       child: GestureDetector(
         onTap: () => setState(() => selectedFilter = index),
@@ -1023,13 +1067,22 @@ class _HistoryScreenState extends State<HistoryScreen>
     );
   }
 
-  // ─── History tile — now a bordered surface card, matching Home's _card ───────
+  // ─── History tile ─────────────────────────────────────────────────────────────
 
   Widget _historyTile(Map<String, dynamic> item) {
     final bool safe = item['safe'];
+
     final String message = item['message'] ?? '';
+
     final double confidenceRaw = item['confidenceRaw'] as double;
+
     final bool isLong = message.length > 80;
+
+    // Audio uses "Confidence".
+    // SMS/Message detection uses "Detection Score".
+    final String scoreLabel = item['category'] == 'Audio'
+        ? 'Confidence'
+        : 'Detection Score';
 
     return GestureDetector(
       onTap: () => _showMessageBottomSheet(context, item),
@@ -1043,11 +1096,13 @@ class _HistoryScreenState extends State<HistoryScreen>
               Padding(
                 padding: const EdgeInsets.only(top: 2),
                 child: _iconBadge(
-                  item['category'] == 'Audio' ? Icons.phone : Icons.sms,
+                  item['category'] == 'Audio' ? Icons.mic : Icons.sms,
                   tint: accentBlue,
                 ),
               ),
+
               const SizedBox(width: 12),
+
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1073,22 +1128,28 @@ class _HistoryScreenState extends State<HistoryScreen>
                           color: safe ? successColor : dangerColor,
                         ),
                         const SizedBox(width: 4),
-                        Text(
-                          item['result'],
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            color: safe ? successColor : dangerColor,
+                        Flexible(
+                          child: Text(
+                            item['result'],
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: safe ? successColor : dangerColor,
+                            ),
                           ),
                         ),
                       ],
                     ),
+
                     const SizedBox(height: 3),
+
                     // Date
                     Text(
                       item['date'],
                       style: const TextStyle(fontSize: 11, color: mutedColor),
                     ),
+
                     // Message preview
                     if (message.isNotEmpty) ...[
                       const SizedBox(height: 7),
@@ -1121,8 +1182,22 @@ class _HistoryScreenState extends State<HistoryScreen>
                         ],
                       ),
                     ],
+
                     const SizedBox(height: 10),
-                    // Confidence bar
+
+                    // Detection score / confidence label
+                    Text(
+                      scoreLabel,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: mutedColor,
+                      ),
+                    ),
+
+                    const SizedBox(height: 5),
+
+                    // Detection score / confidence bar
                     Row(
                       children: [
                         Expanded(
@@ -1149,7 +1224,9 @@ class _HistoryScreenState extends State<HistoryScreen>
                         ),
                       ],
                     ),
+
                     const SizedBox(height: 7),
+
                     // Action badge
                     _actionBadge(item['action']),
                   ],
@@ -1162,7 +1239,7 @@ class _HistoryScreenState extends State<HistoryScreen>
     );
   }
 
-  // ─── Empty state — styled like Home's status card ────────────────────────────
+  // ─── Empty state ──────────────────────────────────────────────────────────────
 
   Widget _emptyState() {
     return Padding(
@@ -1207,7 +1284,9 @@ class _HistoryScreenState extends State<HistoryScreen>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _header(),
+
               const SizedBox(height: 18),
+
               Row(
                 children: [
                   _filterButton("All", 0),
@@ -1217,9 +1296,13 @@ class _HistoryScreenState extends State<HistoryScreen>
                   _filterButton("Messages", 2),
                 ],
               ),
+
               const SizedBox(height: 14),
+
               _recordCountRow(items.length),
+
               const SizedBox(height: 10),
+
               Expanded(
                 child: RefreshIndicator(
                   onRefresh: _loadHistory,

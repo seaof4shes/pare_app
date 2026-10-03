@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'firebase_options.dart';
 import 'features/1_auth/screens/login_screen.dart';
-import 'features/main_nav_screen.dart';
 import 'services/notification_service.dart';
 
 Future<void> main() async {
@@ -15,36 +13,25 @@ Future<void> main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  // Initialize local notifications BEFORE runApp().
+  // Initialize local notifications.
   await NotificationService.init();
 
-  // Check whether the user is already logged in.
-  final prefs = await SharedPreferences.getInstance();
-
-  final phone = prefs.getString('phone');
-
-  runApp(
-    PAREApp(
-      isLoggedIn: phone != null,
-    ),
-  );
+  // Always show the Login screen when the app starts.
+  //
+  // The Login screen determines whether:
+  // 1. The account already exists locally → MPIN only
+  // 2. The account is not stored locally → Firebase OTP
+  runApp(const PAREApp());
 }
 
 class PAREApp extends StatelessWidget {
-  final bool isLoggedIn;
-
-  const PAREApp({
-    super.key,
-    required this.isLoggedIn,
-  });
+  const PAREApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      home: isLoggedIn
-          ? const MainNavScreen()
-          : const LoginScreen(),
+      home: const LoginScreen(),
     );
   }
 }

@@ -354,7 +354,7 @@ class VoiceDetectionService {
           'confidence': fakeScore * 100,
           'fakeScore': fakeScore,
           'safe': false,
-          'action': 'Blocked',
+          'action': 'Alert Shown',
         };
       } else if (fakeScore <= _humanThreshold) {
         return {

@@ -24,17 +24,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
   static const Color mutedColor = Color(0xFF6B7686);
   static const Color dangerColor = Color(0xFFC0392B);
 
-  static const String keyCallDetection = 'call_detection';
+  // ---------------------------------------------------------------------
+  // Existing preference keys are preserved for compatibility with the
+  // rest of the application.
+  // ---------------------------------------------------------------------
   static const String keyMsgDetection = 'msg_detection';
-  static const String keyCallAutoBlock = 'call_auto_block';
   static const String keyMsgScamAlerts = 'msg_scam_alerts';
   static const String keyNotifSound = 'notif_sound';
   static const String keyNotifVibrate = 'notif_vibrate';
 
-  bool protectCalls = true;
+  // ---------------------------------------------------------------------
+  // Settings state
+  // ---------------------------------------------------------------------
+  bool protectVoice = true;
   bool protectSMS = true;
-  bool blockCalls = true;
-  bool blockSMS = true;
+  bool msgScamAlerts = true;
 
   bool notifSound = true;
   bool notifVibrate = true;
@@ -49,6 +53,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadSettings();
   }
 
+  // ---------------------------------------------------------------------
+  // Load saved settings
+  // ---------------------------------------------------------------------
+
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
 
@@ -57,10 +65,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() {
       _username = prefs.getString('username') ?? "Username";
 
-      protectCalls = prefs.getBool(keyCallDetection) ?? true;
+      // Keep the existing 'call_detection' key so other parts of the
+      // application that already use it remain compatible.
+
       protectSMS = prefs.getBool(keyMsgDetection) ?? true;
-      blockCalls = prefs.getBool(keyCallAutoBlock) ?? true;
-      blockSMS = prefs.getBool(keyMsgScamAlerts) ?? true;
+
+      msgScamAlerts = prefs.getBool(keyMsgScamAlerts) ?? true;
 
       notifSound = prefs.getBool(keyNotifSound) ?? true;
       notifVibrate = prefs.getBool(keyNotifVibrate) ?? true;
@@ -69,10 +79,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
+  // ---------------------------------------------------------------------
+  // Save boolean preference
+  // ---------------------------------------------------------------------
+
   Future<void> _saveBool(String key, bool value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(key, value);
   }
+
+  // ---------------------------------------------------------------------
+  // Logout
+  // ---------------------------------------------------------------------
 
   Future<void> _logout() async {
     final prefs = await SharedPreferences.getInstance();
@@ -97,11 +115,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  // ---------------------------------------------------------------------
+  // Open Android application settings
+  // ---------------------------------------------------------------------
+
   Future<void> _openAppSettings() async {
     await AppSettings.openAppSettings();
   }
 
-  // ─── Shared UI pieces (mirrored from HomeScreen / HistoryScreen) ──────────────
+  // ---------------------------------------------------------------------
+  // Header
+  // ---------------------------------------------------------------------
 
   Widget _header() {
     final initial = _username.isNotEmpty ? _username[0].toUpperCase() : "U";
@@ -128,7 +152,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
             ),
+
             const SizedBox(width: 12),
+
             const Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -153,6 +179,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ],
         ),
+
         SizedBox(
           width: 40,
           height: 40,
@@ -161,6 +188,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ],
     );
   }
+
+  // ---------------------------------------------------------------------
+  // Card
+  // ---------------------------------------------------------------------
 
   Widget _card({required Widget child, EdgeInsets? padding}) {
     return Container(
@@ -175,8 +206,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  // ---------------------------------------------------------------------
+  // Icon badge
+  // ---------------------------------------------------------------------
+
   Widget _iconBadge(IconData icon, {Color? tint}) {
     final color = tint ?? primaryBlue;
+
     return Container(
       width: 34,
       height: 34,
@@ -189,11 +225,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  // ---------------------------------------------------------------------
+  // Section
+  // ---------------------------------------------------------------------
+
   Widget _section(String title, List<Widget> children) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 20),
+
         Text(
           title,
           style: const TextStyle(
@@ -202,7 +243,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             color: inkColor,
           ),
         ),
+
         const SizedBox(height: 10),
+
         _card(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -212,6 +255,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ],
     );
   }
+
+  // ---------------------------------------------------------------------
+  // Switch tile
+  // ---------------------------------------------------------------------
 
   Widget _switchTile({
     required IconData icon,
@@ -227,7 +274,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           _iconBadge(icon, tint: value ? accentBlue : mutedColor),
+
           const SizedBox(width: 12),
+
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -240,7 +289,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     color: inkColor,
                   ),
                 ),
+
                 const SizedBox(height: 3),
+
                 Text(
                   subtitle,
                   style: const TextStyle(
@@ -252,6 +303,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
+
           Switch(
             value: value,
             activeThumbColor: primaryBlue,
@@ -265,13 +317,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  // ---------------------------------------------------------------------
+  // Permission / information row
+  // ---------------------------------------------------------------------
+
   Widget _permissionRow({required IconData icon, required String text}) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(
         children: [
           _iconBadge(icon, tint: accentBlue),
+
           const SizedBox(width: 10),
+
           Expanded(
             child: Text(
               text,
@@ -287,6 +345,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  // ---------------------------------------------------------------------
+  // About row
+  // ---------------------------------------------------------------------
+
   Widget _aboutRow(String label, String value) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
@@ -301,6 +363,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               color: primaryBlue,
             ),
           ),
+
           Expanded(
             child: Text(
               value,
@@ -316,17 +379,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  // ---------------------------------------------------------------------
+  // Manage permissions button
+  // ---------------------------------------------------------------------
+
   Widget _managePermissionsButton() {
     return SizedBox(
       width: double.infinity,
       height: 48,
       child: OutlinedButton.icon(
         onPressed: _openAppSettings,
+
         icon: const Icon(Icons.settings, color: primaryBlue, size: 18),
+
         label: const Text(
           "Manage Permissions",
           style: TextStyle(fontWeight: FontWeight.w800, color: primaryBlue),
         ),
+
         style: OutlinedButton.styleFrom(
           side: const BorderSide(color: primaryBlue, width: 1.2),
           shape: RoundedRectangleBorder(
@@ -337,13 +407,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  // ---------------------------------------------------------------------
+  // Logout button
+  // ---------------------------------------------------------------------
+
   Widget _logoutButton() {
     return SizedBox(
       width: double.infinity,
       height: 56,
       child: OutlinedButton.icon(
         onPressed: _logout,
+
         icon: const Icon(Icons.logout, color: dangerColor, size: 18),
+
         label: const Text(
           "Logout",
           style: TextStyle(
@@ -352,6 +428,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             color: dangerColor,
           ),
         ),
+
         style: OutlinedButton.styleFrom(
           side: const BorderSide(color: dangerColor, width: 1.4),
           shape: RoundedRectangleBorder(
@@ -362,13 +439,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  // ---------------------------------------------------------------------
+  // Build
+  // ---------------------------------------------------------------------
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: backgroundColor,
+
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 18, 16, 0),
+
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -385,53 +468,60 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
+                            // =================================================
+                            // PROTECTION
+                            // =================================================
                             _section("Protection", [
+                              // Voice / Audio Detection
                               _switchTile(
-                                icon: Icons.phone_in_talk_outlined,
-                                title: "Call Detection",
+                                icon: Icons.mic_none_outlined,
+                                title: "Voice Detection",
                                 subtitle:
-                                    "Detect suspicious or AI-generated calls",
-                                value: protectCalls,
+                                    "Analyze uploaded audio for AI-generated voice content",
+                                value: protectVoice,
                                 onChanged: (v) {
-                                  setState(() => protectCalls = v);
-                                  _saveBool(keyCallDetection, v);
+                                  setState(() {
+                                    protectVoice = v;
+                                  });
                                 },
                               ),
+
+                              // SMS Detection
                               _switchTile(
                                 icon: Icons.sms_outlined,
                                 title: "Message Detection",
                                 subtitle: "Detect suspicious scam messages",
                                 value: protectSMS,
                                 onChanged: (v) {
-                                  setState(() => protectSMS = v);
+                                  setState(() {
+                                    protectSMS = v;
+                                  });
+
                                   _saveBool(keyMsgDetection, v);
                                 },
                               ),
-                              _switchTile(
-                                icon: Icons.call_end_outlined,
-                                title: "Assisted Call Blocking",
-                                subtitle:
-                                    "Prompt you to block a caller once a scam "
-                                    "call is detected",
-                                value: blockCalls,
-                                onChanged: (v) {
-                                  setState(() => blockCalls = v);
-                                  _saveBool(keyCallAutoBlock, v);
-                                },
-                              ),
+
+                              // Scam SMS Alerts
                               _switchTile(
                                 icon: Icons.warning_amber_rounded,
                                 title: "Scam Message Alerts",
                                 subtitle:
                                     "Show alerts when scam messages are detected",
-                                value: blockSMS,
+                                value: msgScamAlerts,
                                 onChanged: (v) {
-                                  setState(() => blockSMS = v);
+                                  setState(() {
+                                    msgScamAlerts = v;
+                                  });
+
                                   _saveBool(keyMsgScamAlerts, v);
                                 },
                                 isLast: true,
                               ),
                             ]),
+
+                            // =================================================
+                            // NOTIFICATIONS
+                            // =================================================
                             _section("Notifications", [
                               _switchTile(
                                 icon: Icons.volume_up_outlined,
@@ -440,10 +530,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                     "Play a sound when a scam is detected",
                                 value: notifSound,
                                 onChanged: (v) {
-                                  setState(() => notifSound = v);
+                                  setState(() {
+                                    notifSound = v;
+                                  });
+
                                   _saveBool(keyNotifSound, v);
                                 },
                               ),
+
                               _switchTile(
                                 icon: Icons.vibration_outlined,
                                 title: "Vibration Alerts",
@@ -451,12 +545,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                     "Vibrate the phone during scam warnings",
                                 value: notifVibrate,
                                 onChanged: (v) {
-                                  setState(() => notifVibrate = v);
+                                  setState(() {
+                                    notifVibrate = v;
+                                  });
+
                                   _saveBool(keyNotifVibrate, v);
                                 },
                                 isLast: true,
                               ),
                             ]),
+
+                            // =================================================
+                            // PRIVACY & PERMISSIONS
+                            // =================================================
                             _section("Privacy & Permissions", [
                               const Text(
                                 "Allow this app to:",
@@ -466,33 +567,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   color: inkColor,
                                 ),
                               ),
+
                               const SizedBox(height: 14),
-                              _permissionRow(
-                                icon: Icons.call,
-                                text: "Access incoming calls",
-                              ),
+
                               _permissionRow(
                                 icon: Icons.sms,
                                 text: "Access incoming messages",
                               ),
+
                               _permissionRow(
                                 icon: Icons.mic,
-                                text: "Capture short voice samples",
+                                text:
+                                    "Use microphone for supported voice analysis",
                               ),
+
                               _permissionRow(
                                 icon: Icons.upload_file_outlined,
                                 text: "Access files for voice upload",
                               ),
+
                               const SizedBox(height: 4),
+
                               _managePermissionsButton(),
                             ]),
+
+                            // =================================================
+                            // ABOUT
+                            // =================================================
                             _section("About", [
                               _aboutRow("App Name", "P.A.R.E"),
+
                               _aboutRow("Version", "1.0"),
+
                               _aboutRow("Developed for", "Capstone Project"),
                             ]),
+
                             const SizedBox(height: 24),
+
                             _logoutButton(),
+
                             const SizedBox(height: 24),
                           ],
                         ),

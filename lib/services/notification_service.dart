@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class NotificationService {
@@ -44,11 +43,6 @@ class NotificationService {
       },
     );
 
-    // Request notification permission.
-    await Permission.notification.request();
-
-    // Check whether the app was launched by tapping
-    // a notification while the app was completely closed.
     final launchDetails = await _notifications
         .getNotificationAppLaunchDetails();
 

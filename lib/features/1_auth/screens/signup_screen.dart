@@ -138,19 +138,6 @@ class _SignUpScreenState extends State<SignUpScreen> {
         return;
       }
 
-      final phoneExistsFirebase = await UserService().phoneExistsInFirebase(
-        phone,
-      );
-      if (phoneExistsFirebase) {
-        if (!mounted) return;
-        setState(() {
-          _isSendingOtp = false;
-          _phoneError =
-              "This number is already registered. Please login instead.";
-        });
-        return;
-      }
-
       await FirebaseAuth.instance.verifyPhoneNumber(
         phoneNumber: phone,
         verificationCompleted: (PhoneAuthCredential credential) async {},

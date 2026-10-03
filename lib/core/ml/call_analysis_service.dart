@@ -1,7 +1,3 @@
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:pare_app/core/database/database_helper.dart';
-import 'package:pare_app/core/security/local_crypto_service.dart';
-
 import 'voice_recording_service.dart';
 import 'voice_detection_service.dart';
 
@@ -167,31 +163,6 @@ class CallAnalysisService {
 
     final String action =
         result['action'] ?? (isSafe ? 'Allowed' : 'Alert Shown');
-
-    final prefs = await SharedPreferences.getInstance();
-    final currentPhone = prefs.getString('phone') ?? '';
-
-    await DatabaseHelper.instance.insertHistory({
-      'userPhone': currentPhone,
-      'name': historyName,
-      'senderNumber': callerNumber,
-      'type': historyType,
-      'message': await LocalCryptoService.instance.encryptText(message),
-      'result': result['label'],
-      'confidence': result['confidence'],
-      'action': action,
-      'category': category,
-      'safe': isSafe ? 1 : 0,
-      'keywordScore': 0,
-      'riskLevel': result['label'].toString().toLowerCase().contains('deepfake')
-          ? 'HIGH'
-          : result['label'].toString().toLowerCase().contains('suspicious')
-          ? 'MEDIUM'
-          : isSafe
-          ? 'LOW'
-          : 'MEDIUM',
-      'dateTime': DateTime.now().toIso8601String(),
-    });
 
     return {
       ...result,

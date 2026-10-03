@@ -17,6 +17,7 @@ import 'package:pare_app/core/ml/sms_detection_service.dart';
 import 'package:pare_app/core/ml/call_detection_service.dart';
 
 import 'package:pare_app/features/4_settings/screens/updates_screen.dart';
+import 'package:pare_app/features/3_history/screens/history_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -27,6 +28,9 @@ class HomeScreen extends StatefulWidget {
 
 class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final SmsDetectionService smsModel = SmsDetectionService();
+
+  // Kept for the current working voice implementation.
+  // This service currently handles the recording/upload analysis flow.
   final CallDetectionService callDetectionService = CallDetectionService();
 
   static const EventChannel smsEventChannel = EventChannel(
@@ -35,7 +39,10 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   StreamSubscription? _smsSubscription;
 
-  // Design tokens
+  // ============================================================
+  // DESIGN TOKENS
+  // ============================================================
+
   static const Color primaryBlue = Color(0xFF092C56);
   static const Color accentBlue = Color(0xFF2A5298);
   static const Color backgroundColor = Color(0xFFF6F8FB);
@@ -48,9 +55,9 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   static const Color tintBlue = Color.fromRGBO(9, 44, 86, 0.07);
 
   static const String _prefKey = 'protection_activated';
+
   static const String keyCallDetection = 'call_detection';
   static const String keyMsgDetection = 'msg_detection';
-  static const String keyCallAutoBlock = 'call_auto_block';
   static const String keyMsgScamAlerts = 'msg_scam_alerts';
 
   bool _isActivated = false;
@@ -61,9 +68,10 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   bool _callDetection = true;
   bool _msgDetection = true;
-  bool _callAutoBlock = true;
   bool _msgScamAlerts = true;
-  bool _isAnalyzingUpload = false;
+
+  bool _isRecordingVoice = false;
+  bool _isUploadingVoice = false;
 
   String _username = "Username";
 
@@ -85,6 +93,10 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   int _installedVoiceModelVersion = 4;
   int _latestVoiceModelVersion = 4;
 
+  // ============================================================
+  // INITIALIZATION
+  // ============================================================
+
   @override
   void initState() {
     super.initState();
@@ -102,8 +114,6 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     await _loadState();
     await initModel();
 
-    // Check for application/model updates after
-    // the Home screen has initialized.
     await _checkForUpdates();
   }
 
@@ -153,11 +163,8 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       });
 
       debugPrint('🔔 Home update available: $_updateAvailable');
-
       debugPrint('📱 App update: $_appUpdateAvailable');
-
       debugPrint('📩 SMS model update: $_smsModelUpdateAvailable');
-
       debugPrint('🎤 Voice model update: $_voiceModelUpdateAvailable');
     } catch (e, stackTrace) {
       debugPrint('❌ Home update check failed: $e');
@@ -195,7 +202,6 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       ),
     );
 
-    // Re-check after returning from Updates.
     await _checkForUpdates();
   }
 
@@ -234,8 +240,6 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     final msgDetection = prefs.getBool(keyMsgDetection) ?? true;
 
-    final callAutoBlock = prefs.getBool(keyCallAutoBlock) ?? true;
-
     final msgScamAlerts = prefs.getBool(keyMsgScamAlerts) ?? true;
 
     if (!mounted) return;
@@ -245,7 +249,6 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       _isActivated = activated;
       _callDetection = callDetection;
       _msgDetection = msgDetection;
-      _callAutoBlock = callAutoBlock;
       _msgScamAlerts = msgScamAlerts;
       _isLoading = false;
     });
@@ -315,7 +318,10 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         }
 
         if (!msgDetection) {
-          debugPrint("Message Detection is OFF. Skipping SMS detection.");
+          debugPrint(
+            "Message Detection is OFF. "
+            "Skipping SMS detection.",
+          );
           return;
         }
 
@@ -350,7 +356,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   // ============================================================
-  // CALL DETECTION
+  // AUDIO DETECTION
   // ============================================================
 
   Future<void> startCallDetection() async {
@@ -365,9 +371,9 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
       _callListenerStarted = true;
 
-      debugPrint("📞 Call detection is enabled and ready.");
+      debugPrint("🎤 Audio detection is enabled and ready.");
     } catch (e) {
-      debugPrint("❌ Call detection error: $e");
+      debugPrint("❌ Audio detection error: $e");
     }
   }
 
@@ -378,7 +384,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     _callListenerStarted = false;
 
-    debugPrint("🛑 Call detection stopped from Home");
+    debugPrint("🛑 Audio detection stopped from Home");
   }
 
   // ============================================================
@@ -519,6 +525,627 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   // ============================================================
+  // VOICE / AUDIO HISTORY
+  // ============================================================
+
+  Future<int> saveVoiceToHistory({
+    required Map result,
+    required String source,
+    String? fileName,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final currentPhone = prefs.getString('phone') ?? '';
+
+    final label = result['label']?.toString() ?? 'Unknown';
+
+    var confidence =
+        double.tryParse(result['confidence']?.toString() ?? '') ?? 0.0;
+
+    // Voice history stores confidence as 0-100.
+    if (confidence <= 1.0) {
+      confidence *= 100;
+    }
+
+    confidence = confidence.clamp(0.0, 100.0).toDouble();
+
+    final lower = label.toLowerCase();
+
+    final isHuman = lower.contains('human');
+
+    final isSynthetic =
+        lower.contains('ai') ||
+        lower.contains('deepfake') ||
+        lower.contains('synthetic');
+
+    final isSuspicious =
+        lower.contains('suspicious') || lower.contains('possible');
+
+    final riskLevel = isSynthetic
+        ? 'HIGH'
+        : isSuspicious
+        ? 'MEDIUM'
+        : isHuman
+        ? 'LOW'
+        : 'MEDIUM';
+
+    final safe = isHuman && !isSynthetic && !isSuspicious;
+
+    // Current audio behavior:
+    // Human Voice -> Allowed
+    // Suspicious / Possible AI -> Alert Shown
+    // AI / Deepfake -> Alert Shown
+    final action = safe ? 'Allowed' : 'Alert Shown';
+
+    final id = await DatabaseHelper.instance.insertHistory({
+      'userPhone': currentPhone,
+      'name': fileName ?? 'Recorded Sample',
+      'senderNumber': source == 'Recorded Sample'
+          ? 'Microphone Sample'
+          : 'Uploaded File',
+      'type': 'Audio',
+      'message': await LocalCryptoService.instance.encryptText(
+        'Voice analysis result: $label',
+      ),
+      'result': label,
+      'confidence': confidence,
+      'action': action,
+      'category': 'Audio',
+      'safe': safe ? 1 : 0,
+      'keywordScore': 0,
+      'riskLevel': riskLevel,
+      'dateTime': DateTime.now().toIso8601String(),
+    });
+
+    debugPrint('✅ Saved voice analysis to SQLite history with ID: $id');
+
+    return id;
+  }
+
+  // ============================================================
+  // P.A.R.E. POPUP HELPERS
+  // ============================================================
+
+  Dialog _pareDialogShell({
+    required Widget child,
+    EdgeInsets padding = const EdgeInsets.fromLTRB(20, 28, 20, 16),
+  }) {
+    return Dialog(
+      backgroundColor: surfaceColor,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      child: SingleChildScrollView(
+        child: Padding(padding: padding, child: child),
+      ),
+    );
+  }
+
+  Widget _dialogPrimaryButton(String text, VoidCallback onPressed) {
+    return SizedBox(
+      width: double.infinity,
+      height: 50,
+      child: ElevatedButton(
+        onPressed: onPressed,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: primaryBlue,
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
+        child: Text(
+          text,
+          style: const TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w700,
+            color: Colors.white,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _dialogTextButton(String text, VoidCallback onPressed) {
+    return SizedBox(
+      width: double.infinity,
+      height: 46,
+      child: TextButton(
+        onPressed: onPressed,
+        style: TextButton.styleFrom(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
+        child: Text(
+          text,
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: mutedColor,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _alertIconBadge(IconData icon, Color color, {bool solid = false}) {
+    return Container(
+      width: 64,
+      height: 64,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        shape: BoxShape.circle,
+      ),
+      child: solid
+          ? Container(
+              width: 44,
+              height: 44,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              child: Icon(icon, size: 24, color: Colors.white),
+            )
+          : Icon(icon, size: 30, color: color),
+    );
+  }
+
+  Widget _statusPill(String text, bool isOn) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+      decoration: BoxDecoration(
+        color: isOn
+            ? successColor.withValues(alpha: 0.10)
+            : Colors.grey.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+          color: isOn ? successColor : mutedColor,
+        ),
+      ),
+    );
+  }
+
+  Widget _alertRows(List<_AlertRow> rows) {
+    final hasBadges = rows.any((row) => row.badge != null);
+
+    if (hasBadges) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+        decoration: BoxDecoration(
+          color: backgroundColor,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          children: [
+            for (var i = 0; i < rows.length; i++) ...[
+              if (i > 0) _divider(),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: Row(
+                  children: [
+                    Icon(
+                      rows[i].icon,
+                      size: 18,
+                      color: rows[i].badgeOn ? accentBlue : mutedColor,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        rows[i].label,
+                        style: const TextStyle(fontSize: 14, color: inkColor),
+                      ),
+                    ),
+                    if (rows[i].badge != null)
+                      _statusPill(rows[i].badge!, rows[i].badgeOn),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        for (var i = 0; i < rows.length; i++) ...[
+          if (i > 0) const SizedBox(height: 12),
+          Row(
+            children: [
+              _iconBadge(rows[i].icon),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  rows[i].label,
+                  style: const TextStyle(fontSize: 14, color: inkColor),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  // ============================================================
+  // P.A.R.E. ALERT POPUP
+  // ============================================================
+
+  Future<void> _showPAREAlert({
+    required String title,
+    required String message,
+    IconData icon = Icons.info_outline,
+    Color iconColor = primaryBlue,
+    String buttonText = "OK",
+    VoidCallback? onButtonPressed,
+    String? secondaryButtonText,
+    bool solidIcon = false,
+    List<_AlertRow> rows = const [],
+  }) async {
+    if (!mounted) return;
+
+    await showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return _pareDialogShell(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _alertIconBadge(icon, iconColor, solid: solidIcon),
+              const SizedBox(height: 16),
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  color: inkColor,
+                  height: 1.25,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 14,
+                  color: mutedColor,
+                  height: 1.5,
+                ),
+              ),
+              if (rows.isNotEmpty) ...[
+                const SizedBox(height: 18),
+                _alertRows(rows),
+              ],
+              const SizedBox(height: 20),
+              _dialogPrimaryButton(buttonText, () {
+                Navigator.pop(dialogContext);
+                onButtonPressed?.call();
+              }),
+              if (secondaryButtonText != null) ...[
+                const SizedBox(height: 2),
+                _dialogTextButton(
+                  secondaryButtonText,
+                  () => Navigator.pop(dialogContext),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // ============================================================
+  // VOICE RESULT DIALOG
+  // ============================================================
+
+  void _showVoiceResultDialog(
+    Map result, {
+    required String source,
+    int? historyId,
+  }) {
+    final label = result['label']?.toString() ?? 'Unknown';
+
+    var confidence =
+        double.tryParse(result['confidence']?.toString() ?? '') ?? 0.0;
+
+    // Accept either 0-100 or 0-1.
+    if (confidence <= 1.0) {
+      confidence *= 100;
+    }
+
+    confidence = confidence.clamp(0.0, 100.0).toDouble();
+
+    final lower = label.toLowerCase();
+
+    final isSynthetic =
+        lower.contains('ai') ||
+        lower.contains('deepfake') ||
+        lower.contains('synthetic');
+
+    final isUnknown =
+        lower.contains('suspicious') ||
+        lower.contains('possible') ||
+        lower == 'unknown';
+
+    // ==========================================================
+    // AUDIO ACTION
+    //
+    // Human Voice
+    //     -> Allowed
+    //
+    // Suspicious / Possible AI
+    //     -> Alert Shown
+    //
+    // AI / Deepfake
+    //     -> Alert Shown
+    //
+    // This intentionally does NOT use result['action']
+    // because the older voice service may still return
+    // "Blocked" for AI/deepfake results.
+    // ==========================================================
+
+    final action = isSynthetic || isUnknown ? 'Alert Shown' : 'Allowed';
+
+    final Color tone = isSynthetic
+        ? dangerColor
+        : isUnknown
+        ? primaryBlue
+        : successColor;
+
+    final IconData toneIcon = isSynthetic
+        ? Icons.warning_amber_rounded
+        : isUnknown
+        ? Icons.help_outline_rounded
+        : Icons.check_circle_outline_rounded;
+
+    final String verdict = isSynthetic
+        ? 'Likely AI-generated voice'
+        : isUnknown
+        ? 'Possible AI-generated voice'
+        : 'Likely a human voice';
+
+    final String advice = isSynthetic
+        ? "Be careful with this audio. "
+              "Do not share codes, passwords, "
+              "or send money based only on "
+              "this voice."
+        : isUnknown
+        ? "P.A.R.E. could not make a clear "
+              "determination. Try a longer "
+              "or clearer audio sample."
+        : "No strong signs of AI-generated "
+              "voice were detected. Still "
+              "verify unexpected requests "
+              "independently.";
+
+    final IconData sourceIcon = source.toLowerCase().contains('record')
+        ? Icons.mic_none_rounded
+        : Icons.upload_file_outlined;
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return _pareDialogShell(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // SOURCE CHIP + CLOSE
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: backgroundColor,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(sourceIcon, size: 14, color: mutedColor),
+                        const SizedBox(width: 6),
+                        Text(
+                          source,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: mutedColor,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  InkWell(
+                    onTap: () => Navigator.pop(dialogContext),
+                    borderRadius: BorderRadius.circular(20),
+                    child: const Padding(
+                      padding: EdgeInsets.all(4),
+                      child: Icon(
+                        Icons.close_rounded,
+                        size: 20,
+                        color: mutedColor,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 18),
+
+              // VERDICT
+              Row(
+                children: [
+                  Container(
+                    width: 52,
+                    height: 52,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: tone.withValues(alpha: 0.10),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Icon(toneIcon, size: 26, color: tone),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Result',
+                          style: TextStyle(fontSize: 12, color: mutedColor),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          verdict,
+                          style: const TextStyle(
+                            fontSize: 19,
+                            fontWeight: FontWeight.w700,
+                            color: inkColor,
+                            height: 1.25,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 18),
+
+              // CONFIDENCE
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Confidence',
+                    style: TextStyle(fontSize: 13, color: mutedColor),
+                  ),
+                  Text(
+                    '${confidence.toStringAsFixed(0)}%',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: tone,
+                    ),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 8),
+
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: LinearProgressIndicator(
+                  value: confidence / 100,
+                  minHeight: 8,
+                  backgroundColor: borderColor,
+                  valueColor: AlwaysStoppedAnimation<Color>(tone),
+                ),
+              ),
+
+              const SizedBox(height: 14),
+
+              // ACTION
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Action',
+                    style: TextStyle(fontSize: 13, color: mutedColor),
+                  ),
+                  Flexible(
+                    child: Text(
+                      action,
+                      textAlign: TextAlign.right,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: action == 'Allowed' ? successColor : dangerColor,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 16),
+
+              // ADVICE
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
+                decoration: BoxDecoration(
+                  color: backgroundColor,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.only(top: 1),
+                      child: Icon(
+                        Icons.info_outline_rounded,
+                        size: 18,
+                        color: accentBlue,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        advice,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: inkColor,
+                          height: 1.45,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 18),
+
+              // HISTORY BUTTON
+              if (historyId != null)
+                _dialogPrimaryButton('View Detection History', () {
+                  Navigator.pop(dialogContext);
+
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => HistoryScreen(openHistoryId: historyId),
+                    ),
+                  );
+                }),
+
+              if (historyId != null) const SizedBox(height: 4),
+
+              // GOT IT
+              _dialogTextButton('Got it', () => Navigator.pop(dialogContext)),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // ============================================================
   // PROTECTION ACTIVATION
   // ============================================================
 
@@ -536,16 +1163,31 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       if (!granted) {
         if (!mounted) return;
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text("Enable permissions in settings"),
-            action: SnackBarAction(
-              label: "OPEN SETTINGS",
-              onPressed: () {
-                openAppSettings();
-              },
+        await _showPAREAlert(
+          title: "Allow access to turn on protection",
+          message:
+              "P.A.R.E. needs the required "
+              "permissions to activate its "
+              "protection features. You can "
+              "enable them in your device settings.",
+          icon: Icons.lock_open_rounded,
+          iconColor: primaryBlue,
+          buttonText: "Open settings",
+          secondaryButtonText: "Not now",
+          onButtonPressed: () {
+            openAppSettings();
+          },
+          rows: const [
+            _AlertRow(icon: Icons.sms_outlined, label: "Read incoming SMS"),
+            _AlertRow(
+              icon: Icons.mic_none_rounded,
+              label: "Use the microphone",
             ),
-          ),
+            _AlertRow(
+              icon: Icons.notifications_none_rounded,
+              label: "Send you alerts",
+            ),
+          ],
         );
 
         return;
@@ -569,51 +1211,117 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     if (!mounted) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          newState ? "Protection Activated" : "Protection Deactivated",
-        ),
-        backgroundColor: newState
-            ? Colors.green.shade700
-            : Colors.grey.shade700,
-      ),
+    await _showPAREAlert(
+      title: newState ? "Protection is on" : "Protection is off",
+      message: newState
+          ? "P.A.R.E. is now watching in "
+                "the background. You'll get an "
+                "alert if something looks like "
+                "a scam."
+          : "Automatic detection has stopped. "
+                "You can turn protection back on "
+                "anytime from Home.",
+      icon: newState ? Icons.verified_user_rounded : Icons.shield_outlined,
+      iconColor: newState ? successColor : mutedColor,
+      solidIcon: newState,
+      buttonText: "Done",
+      rows: newState
+          ? [
+              _AlertRow(
+                icon: Icons.graphic_eq_rounded,
+                label: "Audio detection",
+                badge: _callDetection ? "On" : "Off",
+                badgeOn: _callDetection,
+              ),
+              _AlertRow(
+                icon: Icons.chat_bubble_outline,
+                label: "Message detection",
+                badge: _msgDetection ? "On" : "Off",
+                badgeOn: _msgDetection,
+              ),
+            ]
+          : const [],
     );
   }
 
   // ============================================================
-  // VOICE LIVE TEST
+  // VOICE / AUDIO RECORDING
   // ============================================================
 
   Future<void> _onTestVoiceDetection() async {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Recording voice for 6 seconds...")),
-    );
-
-    final result = await callDetectionService.runVoiceDemoTest();
-
-    if (!mounted) return;
-
-    if (result == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("Voice detection failed. Please try again."),
-          backgroundColor: Colors.red,
-        ),
-      );
-
+    if (_isRecordingVoice || _isUploadingVoice) {
       return;
     }
 
-    _showVoiceResultDialog(result, source: "Live Recording");
+    if (!mounted) return;
+
+    setState(() {
+      _isRecordingVoice = true;
+    });
+
+    try {
+      final result = await callDetectionService.runVoiceDemoTest();
+
+      if (!mounted) return;
+
+      setState(() {
+        _isRecordingVoice = false;
+      });
+
+      if (result == null) {
+        await _showPAREAlert(
+          title: "Voice Detection Failed",
+          message:
+              "P.A.R.E. was unable to analyze "
+              "the recorded sample. Please try again.",
+          icon: Icons.error_outline,
+          iconColor: dangerColor,
+        );
+
+        return;
+      }
+
+      final historyId = await saveVoiceToHistory(
+        result: result,
+        source: 'Recorded Sample',
+      );
+
+      if (!mounted) return;
+
+      _showVoiceResultDialog(
+        result,
+        source: "Recorded Sample",
+        historyId: historyId,
+      );
+    } catch (e, stackTrace) {
+      debugPrint('❌ Voice recording analysis error: $e');
+      debugPrint('$stackTrace');
+
+      if (!mounted) return;
+
+      setState(() {
+        _isRecordingVoice = false;
+      });
+
+      await _showPAREAlert(
+        title: "Voice Analysis Failed",
+        message:
+            "P.A.R.E. was unable to analyze "
+            "the recorded sample. Please try again.",
+        icon: Icons.error_outline,
+        iconColor: dangerColor,
+      );
+    }
   }
 
   // ============================================================
-  // VOICE FILE UPLOAD
+  // VOICE / AUDIO FILE UPLOAD
   // ============================================================
 
   Future<void> _onUploadVoiceFile() async {
-    if (_isAnalyzingUpload) return;
+    if (_isRecordingVoice || _isUploadingVoice) {
+      return;
+    }
 
     try {
       debugPrint('📁 Opening audio file picker...');
@@ -632,6 +1340,19 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
       if (selectedFile.path == null) {
         debugPrint('❌ Selected file has no accessible path.');
+
+        if (!mounted) return;
+
+        await _showPAREAlert(
+          title: "File Unavailable",
+          message:
+              "The selected audio file could "
+              "not be accessed. Please choose "
+              "another file.",
+          icon: Icons.audio_file_outlined,
+          iconColor: dangerColor,
+        );
+
         return;
       }
 
@@ -640,25 +1361,35 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       final fileName = selectedFile.name;
 
       if (!await file.exists()) {
-        debugPrint('❌ Selected file does not exist: ${file.path}');
+        debugPrint(
+          '❌ Selected file does not exist: '
+          '${file.path}',
+        );
+
+        if (!mounted) return;
+
+        await _showPAREAlert(
+          title: "File Not Found",
+          message:
+              "The selected audio file could "
+              "not be found. Please choose "
+              "another file.",
+          icon: Icons.folder_off_outlined,
+          iconColor: dangerColor,
+        );
+
         return;
       }
 
       debugPrint('✅ Selected audio file: $fileName');
-
       debugPrint('📁 Path: ${file.path}');
-
       debugPrint('📦 Size: ${await file.length()} bytes');
 
       if (!mounted) return;
 
       setState(() {
-        _isAnalyzingUpload = true;
+        _isUploadingVoice = true;
       });
-
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text("Analyzing $fileName...")));
 
       try {
         final result = await callDetectionService.analyzeAudioFile(
@@ -669,118 +1400,72 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         if (!mounted) return;
 
         setState(() {
-          _isAnalyzingUpload = false;
+          _isUploadingVoice = false;
         });
 
         debugPrint('🎤 Upload Voice Result: $result');
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              result?['label']?.toString() ?? 'Voice analysis completed.',
-            ),
-          ),
+        if (result == null) {
+          await _showPAREAlert(
+            title: "Analysis Unavailable",
+            message:
+                "P.A.R.E. could not determine "
+                "a result for the uploaded audio.",
+            icon: Icons.help_outline,
+            iconColor: primaryBlue,
+          );
+
+          return;
+        }
+
+        final historyId = await saveVoiceToHistory(
+          result: result,
+          source: 'Uploaded Audio',
+          fileName: fileName,
+        );
+
+        if (!mounted) return;
+
+        _showVoiceResultDialog(
+          result,
+          source: "Uploaded Audio",
+          historyId: historyId,
         );
       } catch (e, stackTrace) {
         debugPrint('❌ Uploaded voice analysis error: $e');
-
         debugPrint('$stackTrace');
 
         if (!mounted) return;
 
         setState(() {
-          _isAnalyzingUpload = false;
+          _isUploadingVoice = false;
         });
 
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text("Voice analysis failed: $e")));
+        await _showPAREAlert(
+          title: "Voice Analysis Failed",
+          message:
+              "P.A.R.E. was unable to analyze "
+              "the selected audio file. Please "
+              "try another file or try again.",
+          icon: Icons.error_outline,
+          iconColor: dangerColor,
+        );
       }
     } catch (e, stackTrace) {
       debugPrint('❌ File picker error: $e');
-
       debugPrint('$stackTrace');
 
       if (!mounted) return;
 
-      setState(() {
-        _isAnalyzingUpload = false;
-      });
-
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text("Unable to open audio files: $e")));
+      await _showPAREAlert(
+        title: "Unable to Open Audio",
+        message:
+            "P.A.R.E. could not open the audio "
+            "file picker. Please try again.",
+        icon: Icons.folder_off_outlined,
+        iconColor: dangerColor,
+      );
     }
-  }
-
-  // ============================================================
-  // VOICE RESULT DIALOG
-  // ============================================================
-
-  void _showVoiceResultDialog(Map result, {required String source}) {
-    final label = result['label']?.toString() ?? 'Unknown';
-
-    final confidence = result['confidence'] ?? 0.0;
-
-    final action = result['action']?.toString() ?? 'Logged';
-
-    final isSynthetic =
-        label.toLowerCase().contains('ai') ||
-        label.toLowerCase().contains('synthetic');
-
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-        title: Row(
-          children: [
-            Icon(
-              isSynthetic
-                  ? Icons.warning_amber_rounded
-                  : Icons.verified_rounded,
-              color: isSynthetic ? dangerColor : successColor,
-            ),
-            const SizedBox(width: 8),
-            const Text("Voice Analysis"),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              source,
-              style: const TextStyle(fontSize: 12, color: mutedColor),
-            ),
-            const SizedBox(height: 10),
-            _dialogRow("Result", label),
-            _dialogRow("Confidence", "$confidence%"),
-            _dialogRow("Action", action),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("OK"),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _dialogRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Row(
-        children: [
-          Text(
-            "$label: ",
-            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
-          ),
-          Expanded(child: Text(value, style: const TextStyle(fontSize: 13))),
-        ],
-      ),
-    );
   }
 
   // ============================================================
@@ -838,9 +1523,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ],
         ),
 
-        // ======================================================
         // UPDATE BELL
-        // ======================================================
         Row(
           children: [
             GestureDetector(
@@ -865,7 +1548,6 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         size: 25,
                       ),
                     ),
-
                     if (_updateAvailable)
                       Positioned(
                         right: 0,
@@ -892,9 +1574,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 ),
               ),
             ),
-
             const SizedBox(width: 4),
-
             SizedBox(
               width: 40,
               height: 40,
@@ -1056,6 +1736,8 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   // ============================================================
 
   Widget _voiceCheckCard() {
+    final isBusy = _isRecordingVoice || _isUploadingVoice;
+
     return _card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1064,18 +1746,29 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             "Voice Authenticity Check",
             "Find out if a voice is human or AI-generated",
           ),
+
           const SizedBox(height: 16),
+
           Row(
             children: [
               Expanded(
                 child: SizedBox(
                   height: 52,
                   child: ElevatedButton.icon(
-                    onPressed: _onTestVoiceDetection,
-                    icon: const Icon(Icons.mic, size: 18, color: Colors.white),
-                    label: const Text(
-                      "Record Live",
-                      style: TextStyle(
+                    onPressed: isBusy ? null : _onTestVoiceDetection,
+                    icon: _isRecordingVoice
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(Icons.mic, size: 18, color: Colors.white),
+                    label: Text(
+                      _isRecordingVoice ? "Analyzing..." : "Record Sample",
+                      style: const TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w800,
                         color: Colors.white,
@@ -1083,6 +1776,9 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     ),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: primaryBlue,
+                      disabledBackgroundColor: primaryBlue.withValues(
+                        alpha: 0.55,
+                      ),
                       elevation: 0,
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
@@ -1091,13 +1787,15 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ),
                 ),
               ),
+
               const SizedBox(width: 10),
+
               Expanded(
                 child: SizedBox(
                   height: 52,
                   child: OutlinedButton.icon(
-                    onPressed: _isAnalyzingUpload ? null : _onUploadVoiceFile,
-                    icon: _isAnalyzingUpload
+                    onPressed: isBusy ? null : _onUploadVoiceFile,
+                    icon: _isUploadingVoice
                         ? const SizedBox(
                             width: 16,
                             height: 16,
@@ -1112,7 +1810,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                             color: primaryBlue,
                           ),
                     label: Text(
-                      _isAnalyzingUpload ? "Analyzing..." : "Upload File",
+                      _isUploadingVoice ? "Analyzing..." : "Upload File",
                       style: const TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w800,
@@ -1130,9 +1828,11 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               ),
             ],
           ),
+
           const SizedBox(height: 10),
+
           const Text(
-            "Upload a call recording or voice memo to check for AI voice cloning.",
+            "Record a sample or upload an audio file to check for AI-generated voice.",
             style: TextStyle(fontSize: 11.5, color: mutedColor, height: 1.3),
           ),
         ],
@@ -1149,7 +1849,9 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _greeting("Stay protected from scams."),
+
         const SizedBox(height: 20),
+
         _card(
           child: Row(
             children: [
@@ -1188,7 +1890,9 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             ],
           ),
         ),
+
         const SizedBox(height: 20),
+
         SizedBox(
           width: double.infinity,
           height: 60,
@@ -1211,7 +1915,9 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             ),
           ),
         ),
+
         const SizedBox(height: 20),
+
         _card(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1224,33 +1930,36 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   color: inkColor,
                 ),
               ),
+
               const SizedBox(height: 16),
+
               _bulletRow(
-                Icons.phone_in_talk_outlined,
+                Icons.graphic_eq_rounded,
                 _callDetection
-                    ? "Detect AI scam audios"
-                    : "Audio detection is currently off",
+                    ? "Analyze audio for possible AI-generated voices"
+                    : "Audio analysis is currently off",
               ),
+
               const SizedBox(height: 12),
+
               _bulletRow(
                 Icons.sms_outlined,
                 _msgDetection
                     ? "Detect scam SMS messages"
                     : "Message detection is currently off",
               ),
+
               const SizedBox(height: 12),
-              _bulletRow(
-                Icons.graphic_eq_rounded,
-                "Analyze voices — live or uploaded — for AI cloning",
-              ),
-              const SizedBox(height: 12),
+
               _bulletRow(
                 Icons.notifications_active_outlined,
                 _msgScamAlerts
                     ? "Alert you instantly"
                     : "Scam message alerts are currently off",
               ),
+
               const SizedBox(height: 18),
+
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(
@@ -1287,7 +1996,9 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _greeting("Your protection is running in the background."),
+
         const SizedBox(height: 18),
+
         _card(
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1328,22 +2039,30 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             ],
           ),
         ),
+
         const SizedBox(height: 14),
+
         _card(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _cardHeader("Detection", "Controls what P.A.R.E checks"),
+
               const SizedBox(height: 16),
+
               _statusRow(
-                icon: Icons.phone_in_talk_outlined,
+                icon: Icons.graphic_eq_rounded,
                 label: "Audio",
                 statusText: _callDetection ? "On" : "Off",
                 isOn: _callDetection,
               ),
+
               const SizedBox(height: 12),
+
               _divider(),
+
               const SizedBox(height: 12),
+
               _statusRow(
                 icon: Icons.chat_bubble_outline,
                 label: "Messages",
@@ -1353,7 +2072,9 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             ],
           ),
         ),
+
         const SizedBox(height: 14),
+
         _card(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1362,18 +2083,23 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 "Response Actions",
                 "Controls what P.A.R.E does after detection",
               ),
+
               const SizedBox(height: 16),
+
+              // Audio currently alerts rather than blocks.
               _statusRow(
-                icon: Icons.call_end_outlined,
+                icon: Icons.notifications_active_outlined,
                 label: "Audio",
-                statusText: _callAutoBlock
-                    ? "Assisted blocking on"
-                    : "Assisted blocking off",
-                isOn: _callAutoBlock,
+                statusText: "Alerts on",
+                isOn: true,
               ),
+
               const SizedBox(height: 12),
+
               _divider(),
+
               const SizedBox(height: 12),
+
               _statusRow(
                 icon: Icons.sms_failed_outlined,
                 label: "Messages",
@@ -1385,9 +2111,13 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             ],
           ),
         ),
+
         const SizedBox(height: 14),
+
         _voiceCheckCard(),
+
         const SizedBox(height: 20),
+
         SizedBox(
           width: double.infinity,
           height: 56,
@@ -1409,6 +2139,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             ),
           ),
         ),
+
         const SizedBox(height: 24),
       ],
     );
@@ -1449,7 +2180,9 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     _header(),
+
                     const SizedBox(height: 18),
+
                     Expanded(
                       child: SingleChildScrollView(
                         child: _isActivated ? _activeView() : _inactiveView(),
@@ -1461,4 +2194,24 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       ),
     );
   }
+}
+
+// ============================================================
+// ALERT ROW MODEL
+// ============================================================
+
+class _AlertRow {
+  final IconData icon;
+  final String label;
+
+  final String? badge;
+
+  final bool badgeOn;
+
+  const _AlertRow({
+    required this.icon,
+    required this.label,
+    this.badge,
+    this.badgeOn = true,
+  });
 }

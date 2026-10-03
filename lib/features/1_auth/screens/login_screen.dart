@@ -11,7 +11,12 @@ import 'otp_screen.dart';
 import 'package:pare_app/features/1_auth/screens/forgot_mpin_screen.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+  final bool unlockMode;
+
+  const LoginScreen({
+    super.key,
+    this.unlockMode = false,
+  });
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();

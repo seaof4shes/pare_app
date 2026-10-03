@@ -72,13 +72,9 @@ class SmsDetectionService {
           return;
         } catch (e, stackTrace) {
           log('⚠️ Downloaded SMS model could not be loaded: $e');
-
           log('⚠️ Stack trace: $stackTrace');
 
-          // Remove invalid active model reference.
           await prefs.remove(_activeModelPathKey);
-
-          // Continue to bundled model.
         }
       } else {
         await prefs.remove(_activeModelPathKey);
@@ -143,7 +139,6 @@ class SmsDetectionService {
       );
 
       log('📁 Temporary model path: ${tempFile.path}');
-
       log('📁 Active model path: ${activeFile.path}');
 
       // --------------------------------------------------------
@@ -222,15 +217,6 @@ class SmsDetectionService {
 
       log('✅ Downloaded SMS model passed compatibility check.');
 
-      if (!isCompatible) {
-        throw Exception(
-          'Downloaded SMS model is incompatible with '
-          'the current P.A.R.E. SMS detection service.',
-        );
-      }
-
-      log('✅ Downloaded SMS model passed compatibility check.');
-
       // --------------------------------------------------------
       // 3. MOVE VERIFIED MODEL TO ACTIVE MODEL LOCATION
       // --------------------------------------------------------
@@ -281,10 +267,8 @@ class SmsDetectionService {
       };
     } catch (e, stackTrace) {
       log('❌ SMS model update failed: $e');
-
       log('❌ Stack trace: $stackTrace');
 
-      // Remove incomplete temporary download.
       try {
         if (tempFile != null && await tempFile.exists()) {
           await tempFile.delete();
@@ -303,8 +287,8 @@ class SmsDetectionService {
   Future<int> getInstalledModelVersion() async {
     final prefs = await SharedPreferences.getInstance();
 
-    // TEMPORARY RESET: return to the original bundled SMS model.
     await prefs.remove(_activeModelPathKey);
+
     await prefs.setInt(_smsModelVersionKey, defaultSmsModelVersion);
 
     return defaultSmsModelVersion;
@@ -344,7 +328,12 @@ class SmsDetectionService {
 
   int _keywordScore(String message) {
     final text = message.toLowerCase();
+
     int score = 0;
+
+    // ----------------------------------------------------------
+    // STRONG LINK / PHISHING INDICATORS
+    // ----------------------------------------------------------
 
     if (text.contains('http') ||
         text.contains('www.') ||
@@ -352,26 +341,34 @@ class SmsDetectionService {
       score += 3;
     }
 
-    if (text.contains('bit.ly') ||
-        text.contains('tinyurl') ||
-        text.contains('link')) {
+    if (text.contains('bit.ly') || text.contains('tinyurl')) {
+      score += 3;
+    }
+
+    // "link" by itself is no longer heavily weighted because
+    // legitimate companies frequently tell users to open links.
+    if (text.contains('link') &&
+        (text.contains('verify') ||
+            text.contains('account') ||
+            text.contains('login') ||
+            text.contains('password'))) {
       score += 2;
     }
+
+    // ----------------------------------------------------------
+    // ACCOUNT / CREDENTIAL PHISHING
+    // ----------------------------------------------------------
 
     if (text.contains('verify')) {
       score += 2;
     }
 
     if (text.contains('confirm')) {
-      score += 2;
+      score += 1;
     }
 
     if (text.contains('validate')) {
       score += 2;
-    }
-
-    if (text.contains('update')) {
-      score += 1;
     }
 
     if (text.contains('login')) {
@@ -379,14 +376,6 @@ class SmsDetectionService {
     }
 
     if (text.contains('sign in')) {
-      score += 1;
-    }
-
-    if (text.contains('click')) {
-      score += 1;
-    }
-
-    if (text.contains('tap')) {
       score += 1;
     }
 
@@ -398,14 +387,6 @@ class SmsDetectionService {
       score += 1;
     }
 
-    if (text.contains('account')) {
-      score += 1;
-    }
-
-    if (text.contains('identity')) {
-      score += 2;
-    }
-
     if (text.contains('password')) {
       score += 3;
     }
@@ -413,6 +394,22 @@ class SmsDetectionService {
     if (text.contains('pin')) {
       score += 3;
     }
+
+    if (text.contains('personal information')) {
+      score += 3;
+    }
+
+    if (text.contains('account number')) {
+      score += 2;
+    }
+
+    if (text.contains('identity')) {
+      score += 2;
+    }
+
+    // ----------------------------------------------------------
+    // OTP
+    // ----------------------------------------------------------
 
     final hasOtp = text.contains('otp') || text.contains('one-time password');
 
@@ -433,7 +430,6 @@ class SmsDetectionService {
         text.contains('confirm') ||
         text.contains('validate') ||
         text.contains('click') ||
-        text.contains('tap') ||
         text.contains('link') ||
         text.contains('urgent') ||
         text.contains('immediately') ||
@@ -461,17 +457,9 @@ class SmsDetectionService {
       score += 1;
     }
 
-    if (text.contains('account number')) {
-      score += 2;
-    }
-
-    if (text.contains('personal information')) {
-      score += 3;
-    }
-
-    if (text.contains('details')) {
-      score += 1;
-    }
+    // ----------------------------------------------------------
+    // URGENCY / THREATS
+    // ----------------------------------------------------------
 
     if (text.contains('urgent')) {
       score += 2;
@@ -481,19 +469,7 @@ class SmsDetectionService {
       score += 2;
     }
 
-    if (text.contains('now')) {
-      score += 1;
-    }
-
     if (text.contains('within 12 hours')) {
-      score += 2;
-    }
-
-    if (text.contains('limited time')) {
-      score += 2;
-    }
-
-    if (text.contains('act now')) {
       score += 2;
     }
 
@@ -545,6 +521,10 @@ class SmsDetectionService {
       score += 2;
     }
 
+    // ----------------------------------------------------------
+    // FINANCIAL / BANKING CONTEXT
+    // ----------------------------------------------------------
+
     if (text.contains('bank')) {
       score += 1;
     }
@@ -566,15 +546,15 @@ class SmsDetectionService {
     }
 
     if (text.contains('gcash')) {
-      score += 2;
+      score += 1;
     }
 
     if (text.contains('maya')) {
-      score += 2;
+      score += 1;
     }
 
     if (text.contains('paymaya')) {
-      score += 2;
+      score += 1;
     }
 
     if (text.contains('wallet')) {
@@ -585,16 +565,43 @@ class SmsDetectionService {
       score += 1;
     }
 
-    if (text.contains('congratulations')) {
-      score += 3;
+    // ----------------------------------------------------------
+    // REWARD / PRIZE SCAM PATTERNS
+    // ----------------------------------------------------------
+    //
+    // Generic promotional words such as "claim", "reward",
+    // "voucher", "gift", "sale", "offer", etc. are NOT scored
+    // by themselves.
+    //
+    // They receive additional weight only when combined with
+    // stronger scam context.
+    // ----------------------------------------------------------
+
+    final hasPrizeContext =
+        text.contains('prize') ||
+        text.contains('reward') ||
+        text.contains('winner') ||
+        text.contains('you won') ||
+        text.contains('congratulations');
+
+    final hasFinancialRequest =
+        text.contains('send money') ||
+        text.contains('transfer money') ||
+        text.contains('pay now') ||
+        text.contains('payment required') ||
+        text.contains('account number') ||
+        text.contains('personal information');
+
+    if (text.contains('congratulations') && hasPrizeContext) {
+      score += 2;
     }
 
-    if (text.contains('congrats')) {
+    if (text.contains('congrats') && hasPrizeContext) {
       score += 2;
     }
 
     if (text.contains('you won')) {
-      score += 3;
+      score += 2;
     }
 
     if (text.contains('winner')) {
@@ -602,34 +609,41 @@ class SmsDetectionService {
     }
 
     if (text.contains('prize')) {
-      score += 2;
-    }
-
-    if (text.contains('claim')) {
-      score += 2;
+      score += 1;
     }
 
     if (text.contains('reward')) {
+      score += 1;
+    }
+
+    // "claim" is only suspicious when combined with a prize,
+    // reward, or financial request.
+    if (text.contains('claim') && (hasPrizeContext || hasFinancialRequest)) {
       score += 2;
     }
 
-    if (text.contains('free')) {
-      score += 1;
-    }
+    // ----------------------------------------------------------
+    // MONEY
+    // ----------------------------------------------------------
 
-    if (text.contains('bonus')) {
-      score += 1;
-    }
-
-    if (text.contains('cash')) {
-      score += 1;
-    }
-
-    if (text.contains('₱') || text.contains('php')) {
+    // Currency by itself is NOT enough to indicate a scam.
+    // Legitimate advertisements commonly contain prices.
+    if ((text.contains('₱') || text.contains('php')) &&
+        (hasFinancialRequest ||
+            hasPrizeContext ||
+            text.contains('send') ||
+            text.contains('transfer'))) {
       score += 2;
     }
 
-    if (text.contains('pindutin')) {
+    // ----------------------------------------------------------
+    // FILIPINO SCAM PATTERNS
+    // ----------------------------------------------------------
+
+    if (text.contains('pindutin') &&
+        (text.contains('verify') ||
+            text.contains('login') ||
+            text.contains('account'))) {
       score += 2;
     }
 
@@ -637,45 +651,53 @@ class SmsDetectionService {
       score += 2;
     }
 
-    if (text.contains('mag login')) {
+    if (text.contains('mag login') &&
+        (text.contains('account') || text.contains('verify'))) {
       score += 2;
     }
 
-    if (text.contains('mag-register') || text.contains('mag register')) {
+    if ((text.contains('mag-register') || text.contains('mag register')) &&
+        (text.contains('account') || text.contains('verify'))) {
       score += 2;
     }
 
-    if (text.contains('kunin')) {
+    if (text.contains('kunin') && hasPrizeContext) {
       score += 1;
     }
 
-    if (text.contains('claim mo')) {
+    if (text.contains('claim mo') && hasPrizeContext) {
       score += 2;
     }
 
-    if (text.contains('panalo')) {
+    if (text.contains('panalo') && hasPrizeContext) {
       score += 2;
     }
 
-    if (text.contains('nanalo')) {
+    if (text.contains('nanalo') && hasPrizeContext) {
       score += 2;
     }
 
-    if (text.contains('premyo')) {
+    if (text.contains('premyo') && hasPrizeContext) {
       score += 2;
     }
 
-    if (text.contains('libreng')) {
+    if (text.contains('libreng') && hasPrizeContext) {
       score += 1;
     }
 
-    if (text.contains('load')) {
+    // "load" alone is not a scam indicator because legitimate
+    // telecommunications and e-wallet promotions use it.
+    if (text.contains('load') && hasFinancialRequest) {
       score += 1;
     }
 
-    if (text.contains('ayuda')) {
+    if (text.contains('ayuda') && hasFinancialRequest) {
       score += 1;
     }
+
+    // ----------------------------------------------------------
+    // COMBINED HIGH-RISK PATTERNS
+    // ----------------------------------------------------------
 
     if (text.contains('verify') && text.contains('account')) {
       score += 2;
@@ -689,13 +711,19 @@ class SmsDetectionService {
       score += 2;
     }
 
-    if (text.contains('claim') &&
-        (text.contains('prize') || text.contains('reward'))) {
+    if (text.contains('urgent') &&
+        (text.contains('account') || text.contains('verify'))) {
       score += 2;
     }
 
-    if (text.contains('urgent') &&
-        (text.contains('account') || text.contains('verify'))) {
+    if (text.contains('limited time') && hasFinancialRequest) {
+      score += 1;
+    }
+
+    if (text.contains('act now') &&
+        (text.contains('verify') ||
+            text.contains('account') ||
+            hasFinancialRequest)) {
       score += 2;
     }
 
@@ -721,10 +749,15 @@ class SmsDetectionService {
 
     final score = _keywordScore(message);
 
-    final wordCount = _cleanText(
-      message,
-    ).split(' ').where((word) => word.trim().isNotEmpty).length;
+    final cleanedText = _cleanText(message);
 
+    final wordCount = cleanedText
+        .split(' ')
+        .where((word) => word.trim().isNotEmpty)
+        .length;
+
+    // Very short messages without suspicious patterns
+    // are treated as legitimate.
     if (wordCount <= 3 && score == 0) {
       return SmsDetectionResult(
         scamProbability: probability,
@@ -737,17 +770,72 @@ class SmsDetectionService {
     String label;
     String riskLevel;
 
+    // ==========================================================
     // HYBRID DECISION
-    if (probability >= 0.75 || score >= 8) {
+    // ==========================================================
+    //
+    // ML prediction is the PRIMARY signal.
+    // Keyword/pattern detection provides SUPPORTING evidence.
+    //
+    // Important:
+    // A high keyword score alone should not automatically turn
+    // a very low ML scam probability into HIGH risk.
+    // ==========================================================
+
+    if (probability >= 0.75) {
+      // Strong ML evidence of scam.
       label = "Scam";
       riskLevel = "HIGH";
-    } else if (probability >= 0.50 || score >= 4) {
-      label = "Suspicious";
-      riskLevel = "MEDIUM";
+    } else if (probability >= 0.50) {
+      // Moderate ML probability alone is not enough to trigger
+      // a suspicious classification.
+      //
+      // Require supporting scam-pattern evidence.
+      if (score >= 10) {
+        label = "Scam";
+        riskLevel = "HIGH";
+      } else if (score >= 4) {
+        label = "Suspicious";
+        riskLevel = "MEDIUM";
+      } else {
+        label = "Legit";
+        riskLevel = "LOW";
+      }
+    } else if (probability >= 0.35) {
+      // Lower ML confidence.
+      //
+      // Only very strong scam patterns should make this HIGH.
+      if (score >= 12) {
+        label = "Scam";
+        riskLevel = "HIGH";
+      } else if (score >= 6) {
+        label = "Suspicious";
+        riskLevel = "MEDIUM";
+      } else {
+        label = "Legit";
+        riskLevel = "LOW";
+      }
     } else {
-      label = "Legit";
-      riskLevel = "LOW";
+      // Low ML scam probability.
+      //
+      // Strong keyword evidence can still flag a message,
+      // but ordinary promotional wording will not.
+      if (score >= 12) {
+        label = "Suspicious";
+        riskLevel = "MEDIUM";
+      } else {
+        label = "Legit";
+        riskLevel = "LOW";
+      }
     }
+
+    log(
+      '📊 SMS prediction: '
+      'ML=${probability.toStringAsFixed(4)} '
+      'Keywords=$score '
+      'Result=$label '
+      'Risk=$riskLevel',
+    );
 
     return SmsDetectionResult(
       scamProbability: probability,
@@ -763,7 +851,9 @@ class SmsDetectionService {
 
   void close() {
     _interpreter?.close();
+
     _interpreter = null;
+
     _isLoaded = false;
   }
 }

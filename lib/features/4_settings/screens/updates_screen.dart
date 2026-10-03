@@ -40,17 +40,186 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
   static const Color primaryBlue = Color(0xFF092C56);
   static const Color accentBlue = Color(0xFF2A5298);
   static const Color backgroundColor = Color(0xFFF6F8FB);
+  static const Color surfaceColor = Color(0xFFFFFFFF);
   static const Color inkColor = Color(0xFF10192B);
   static const Color mutedColor = Color(0xFF6B7686);
   static const Color borderColor = Color(0xFFE4E9F0);
   static const Color successColor = Color(0xFF1C8756);
 
+  static const Color dangerColor = Color(0xFFC0392B);
+
   bool _isUpdatingSmsModel = false;
   bool _isUpdatingVoiceModel = false;
 
-  // ------------------------------------------------------------
+  // ============================================================
+  // P.A.R.E. DIALOG HELPERS
+  // Same visual style used by HomeScreen
+  // ============================================================
+
+  Dialog _pareDialogShell({
+    required Widget child,
+    EdgeInsets padding = const EdgeInsets.fromLTRB(20, 28, 20, 16),
+  }) {
+    return Dialog(
+      backgroundColor: surfaceColor,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      child: SingleChildScrollView(
+        child: Padding(padding: padding, child: child),
+      ),
+    );
+  }
+
+  Widget _dialogPrimaryButton(String text, VoidCallback onPressed) {
+    return SizedBox(
+      width: double.infinity,
+      height: 50,
+      child: ElevatedButton(
+        onPressed: onPressed,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: primaryBlue,
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
+        child: Text(
+          text,
+          style: const TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w700,
+            color: Colors.white,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _dialogTextButton(String text, VoidCallback onPressed) {
+    return SizedBox(
+      width: double.infinity,
+      height: 46,
+      child: TextButton(
+        onPressed: onPressed,
+        style: TextButton.styleFrom(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
+        child: Text(
+          text,
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: mutedColor,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _alertIconBadge(IconData icon, Color color, {bool solid = false}) {
+    return Container(
+      width: 64,
+      height: 64,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        shape: BoxShape.circle,
+      ),
+      child: solid
+          ? Container(
+              width: 44,
+              height: 44,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              child: Icon(icon, size: 24, color: Colors.white),
+            )
+          : Icon(icon, size: 30, color: color),
+    );
+  }
+
+  // ============================================================
+  // UPDATE RESULT POPUP
+  // ============================================================
+
+  Future<void> _showUpdateDialog({
+    required String title,
+    required String message,
+    required bool success,
+    bool returnToHome = false,
+  }) async {
+    if (!mounted) return;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return _pareDialogShell(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _alertIconBadge(
+                success
+                    ? Icons.check_circle_outline_rounded
+                    : Icons.error_outline_rounded,
+                success ? successColor : dangerColor,
+                solid: success,
+              ),
+
+              const SizedBox(height: 16),
+
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  color: inkColor,
+                  height: 1.25,
+                ),
+              ),
+
+              const SizedBox(height: 8),
+
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 14,
+                  color: mutedColor,
+                  height: 1.5,
+                ),
+              ),
+
+              const SizedBox(height: 20),
+
+              _dialogPrimaryButton("Done", () {
+                Navigator.pop(dialogContext);
+              }),
+
+              const SizedBox(height: 2),
+
+              _dialogTextButton("Close", () {
+                Navigator.pop(dialogContext);
+              }),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (returnToHome && mounted) {
+      Navigator.pop(context, true);
+    }
+  }
+
+  // ============================================================
   // SMS MODEL UPDATE
-  // ------------------------------------------------------------
+  // ============================================================
+
   Future<void> _updateSmsModel() async {
     if (_isUpdatingSmsModel) return;
 
@@ -70,43 +239,33 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
       if (!mounted) return;
 
       if (result['success'] == true) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'SMS Detection Model v${widget.latestSmsModelVersion} '
-              'updated successfully.',
-            ),
-            backgroundColor: successColor,
-            behavior: SnackBarBehavior.floating,
-          ),
+        await _showUpdateDialog(
+          title: "SMS Model Updated",
+          message:
+              "SMS Detection Model v${widget.latestSmsModelVersion} "
+              "has been successfully installed and is now active.",
+          success: true,
+          returnToHome: true,
         );
-
-        await Future.delayed(const Duration(milliseconds: 700));
-
-        if (!mounted) return;
-
-        Navigator.pop(context, true);
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
+        await _showUpdateDialog(
+          title: "Update Failed",
+          message:
               result['error']?.toString() ??
-                  'SMS detection model update failed.',
-            ),
-            backgroundColor: Colors.red.shade700,
-            behavior: SnackBarBehavior.floating,
-          ),
+              "The SMS detection model could not be updated. "
+                  "Your current model will continue to be used.",
+          success: false,
         );
       }
     } catch (e) {
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('SMS detection model update failed: $e'),
-          backgroundColor: Colors.red.shade700,
-          behavior: SnackBarBehavior.floating,
-        ),
+      await _showUpdateDialog(
+        title: "Update Failed",
+        message:
+            "The SMS detection model could not be updated. "
+            "Your current model will continue to be used.",
+        success: false,
       );
     } finally {
       if (mounted) {
@@ -117,9 +276,10 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
     }
   }
 
-  // ------------------------------------------------------------
+  // ============================================================
   // VOICE MODEL UPDATE
-  // ------------------------------------------------------------
+  // ============================================================
+
   Future<void> _updateVoiceModel() async {
     if (_isUpdatingVoiceModel) return;
 
@@ -154,33 +314,25 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
       if (success) {
         log('✅ VOICE MODEL UPDATE SUCCESS.');
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Voice Detection Model v${widget.latestVoiceModelVersion} '
-              'updated successfully.',
-            ),
-            backgroundColor: successColor,
-            behavior: SnackBarBehavior.floating,
-          ),
+        await _showUpdateDialog(
+          title: "Voice Model Updated",
+          message:
+              "Voice Detection Model v${widget.latestVoiceModelVersion} "
+              "has been successfully installed and is now active.",
+          success: true,
+          returnToHome: true,
         );
 
-        await Future.delayed(const Duration(milliseconds: 700));
-
-        if (!mounted) return;
-
         log('🏠 RETURNING TO HOME AFTER VOICE UPDATE.');
-
-        Navigator.pop(context, true);
       } else {
         log('❌ VOICE MODEL UPDATE RETURNED FALSE.');
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Voice detection model update failed.'),
-            backgroundColor: Colors.red,
-            behavior: SnackBarBehavior.floating,
-          ),
+        await _showUpdateDialog(
+          title: "Update Failed",
+          message:
+              "The voice detection model could not be updated. "
+              "Your current model will continue to be used.",
+          success: false,
         );
       }
     } catch (e, stackTrace) {
@@ -189,12 +341,12 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
 
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Voice detection model update failed: $e'),
-          backgroundColor: Colors.red,
-          behavior: SnackBarBehavior.floating,
-        ),
+      await _showUpdateDialog(
+        title: "Update Failed",
+        message:
+            "The voice detection model could not be updated. "
+            "Your current model will continue to be used.",
+        success: false,
       );
     } finally {
       if (mounted) {
@@ -204,6 +356,10 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
       }
     }
   }
+
+  // ============================================================
+  // BUILD
+  // ============================================================
 
   @override
   Widget build(BuildContext context) {
@@ -237,13 +393,16 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
                   color: inkColor,
                 ),
               ),
+
               const SizedBox(height: 6),
+
               Text(
                 hasUpdates
                     ? "Newer application or detection models are available."
                     : "Your application and detection models are up to date.",
                 style: const TextStyle(fontSize: 13, color: mutedColor),
               ),
+
               const SizedBox(height: 20),
 
               // ------------------------------------------------------------
@@ -312,6 +471,9 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
 
               const SizedBox(height: 2),
 
+              // ------------------------------------------------------------
+              // INFORMATION BOX
+              // ------------------------------------------------------------
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(14),
@@ -351,6 +513,10 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
     );
   }
 
+  // ============================================================
+  // UPDATE CARD
+  // ============================================================
+
   Widget _updateCard({
     required IconData icon,
     required String title,
@@ -386,7 +552,9 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
                 ),
                 child: Icon(icon, color: primaryBlue, size: 21),
               ),
+
               const SizedBox(width: 12),
+
               Expanded(
                 child: Text(
                   title,
@@ -397,6 +565,7 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
                   ),
                 ),
               ),
+
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
                 decoration: BoxDecoration(
@@ -416,7 +585,9 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
               ),
             ],
           ),
+
           const SizedBox(height: 14),
+
           Text(
             description,
             style: const TextStyle(
@@ -425,21 +596,29 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
               height: 1.3,
             ),
           ),
+
           const SizedBox(height: 14),
+
           Row(
             children: [
               Expanded(child: _versionBox("Current", currentVersion)),
+
               const SizedBox(width: 10),
+
               const Icon(
                 Icons.arrow_forward_rounded,
                 size: 18,
                 color: mutedColor,
               ),
+
               const SizedBox(width: 10),
+
               Expanded(child: _versionBox("Latest", latestVersion)),
             ],
           ),
+
           const SizedBox(height: 15),
+
           SizedBox(
             width: double.infinity,
             height: 44,
@@ -484,6 +663,10 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
     );
   }
 
+  // ============================================================
+  // VERSION BOX
+  // ============================================================
+
   Widget _versionBox(String label, String version) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -502,7 +685,9 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
               fontWeight: FontWeight.w600,
             ),
           ),
+
           const SizedBox(height: 3),
+
           Text(
             version,
             style: const TextStyle(

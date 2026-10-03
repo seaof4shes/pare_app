@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 
@@ -82,7 +83,17 @@ class DatabaseHelper {
   Future<int> insertHistory(Map<String, dynamic> data) async {
     final db = await instance.database;
 
-    return await db.insert('detection_history', data);
+    debugPrint('🟡 SQLITE INSERT');
+    debugPrint('   name: ${data['name']}');
+    debugPrint('   type: ${data['type']}');
+    debugPrint('   category: ${data['category']}');
+    debugPrint('   result: ${data['result']}');
+
+    final id = await db.insert('detection_history', data);
+
+    debugPrint('🟢 SQLITE INSERTED ID: $id');
+
+    return id;
   }
 
   Future<List<Map<String, dynamic>>> getHistory({String? userPhone}) async {
