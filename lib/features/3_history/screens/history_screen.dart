@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:pare_app/core/database/database_helper.dart';
 import 'package:pare_app/core/security/local_crypto_service.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 class HistoryScreen extends StatefulWidget {
   final int? openHistoryId;
@@ -18,15 +18,27 @@ class _HistoryScreenState extends State<HistoryScreen>
     with WidgetsBindingObserver {
   int selectedFilter = 0;
 
+  // ---------------------------------------------------------------------
+  // Design tokens — mirrored from HomeScreen so both screens read as one
+  // cohesive design system.
+  // ---------------------------------------------------------------------
   static const Color primaryBlue = Color(0xFF092C56);
-  static const Color cardColor = Color(0xFFEFF4F3);
-  static const Color backgroundColor = Color(0xFFF7F8FA);
+  static const Color accentBlue = Color(0xFF2A5298);
+  static const Color backgroundColor = Color(0xFFF6F8FB);
+  static const Color surfaceColor = Color(0xFFFFFFFF);
+  static const Color borderColor = Color(0xFFE4E9F0);
+  static const Color inkColor = Color(0xFF10192B);
+  static const Color mutedColor = Color(0xFF6B7686);
+  static const Color successColor = Color(0xFF1C8756);
+  static const Color warningColor = Color(0xFFB9770E);
+  static const Color dangerColor = Color(0xFFC0392B);
 
   static const MethodChannel _blockChannel = MethodChannel(
     'pare_app/block_sender',
   );
 
   List<Map<String, dynamic>> history = [];
+  String _username = "Username";
 
   @override
   void initState() {
@@ -34,6 +46,7 @@ class _HistoryScreenState extends State<HistoryScreen>
 
     WidgetsBinding.instance.addObserver(this);
 
+    _loadUsername();
     _loadHistory();
   }
 
@@ -56,6 +69,17 @@ class _HistoryScreenState extends State<HistoryScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  Future<void> _loadUsername() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedUsername = prefs.getString('username') ?? "Username";
+
+    if (!mounted) return;
+
+    setState(() {
+      _username = savedUsername;
+    });
   }
 
   Future<void> _loadHistory() async {
@@ -83,7 +107,7 @@ class _HistoryScreenState extends State<HistoryScreen>
     final convertedHistory = decryptedHistory.map((data) {
       final confidenceValue = ((data['confidence'] as num?)?.toDouble() ?? 0.0);
 
-      final isCall = (data['category'] ?? '') == 'Calls';
+      final isCall = (data['category'] ?? '') == 'Audio';
 
       final confidencePercent = isCall
           ? confidenceValue
@@ -143,7 +167,6 @@ class _HistoryScreenState extends State<HistoryScreen>
       history = convertedHistory;
     });
 
-    // ⭐ NEW:
     // If this HistoryScreen was opened from a notification,
     // automatically open that specific history record.
     if (widget.openHistoryId != null) {
@@ -199,11 +222,17 @@ class _HistoryScreenState extends State<HistoryScreen>
     final shouldContinue = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
 
-        title: const Text(
-          'Block Sender?',
-          style: TextStyle(fontWeight: FontWeight.w800),
+        title: Row(
+          children: const [
+            Icon(Icons.block_rounded, color: dangerColor),
+            SizedBox(width: 8),
+            Text(
+              'Block Sender?',
+              style: TextStyle(fontWeight: FontWeight.w800, color: inkColor),
+            ),
+          ],
         ),
 
         content: Text(
@@ -212,6 +241,7 @@ class _HistoryScreenState extends State<HistoryScreen>
           'Sender: ${_formatSender(senderNumber)}\n\n'
           'Select "Block" or "Block & report spam" '
           'in your messaging app to block this sender.',
+          style: const TextStyle(color: mutedColor, fontSize: 13, height: 1.4),
         ),
 
         actions: [
@@ -219,7 +249,10 @@ class _HistoryScreenState extends State<HistoryScreen>
             onPressed: () {
               Navigator.pop(context, false);
             },
-            child: const Text('CANCEL'),
+            child: const Text(
+              'CANCEL',
+              style: TextStyle(color: mutedColor, fontWeight: FontWeight.w700),
+            ),
           ),
 
           ElevatedButton(
@@ -228,11 +261,18 @@ class _HistoryScreenState extends State<HistoryScreen>
             },
 
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFD32F2F),
+              backgroundColor: dangerColor,
               foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
             ),
 
-            child: const Text('OPEN MESSAGES'),
+            child: const Text(
+              'OPEN MESSAGES',
+              style: TextStyle(fontWeight: FontWeight.w800),
+            ),
           ),
         ],
       ),
@@ -326,16 +366,105 @@ class _HistoryScreenState extends State<HistoryScreen>
   }
 
   Color _confidenceColor(double percent, bool safe) {
-    if (safe) return const Color(0xFF388E3C);
-    if (percent >= 75) return const Color(0xFFD32F2F);
-    if (percent >= 40) return const Color(0xFFF57C00);
-    return const Color(0xFF388E3C);
+    if (safe) return successColor;
+    if (percent >= 75) return dangerColor;
+    if (percent >= 40) return warningColor;
+    return successColor;
   }
+
+  // ─── Shared UI pieces (mirrored from HomeScreen) ──────────────────────────────
+
+  Widget _header() {
+    final initial = _username.isNotEmpty ? _username[0].toUpperCase() : "U";
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Row(
+          children: [
+            Container(
+              width: 42,
+              height: 42,
+              alignment: Alignment.center,
+              decoration: const BoxDecoration(
+                color: primaryBlue,
+                shape: BoxShape.circle,
+              ),
+              child: Text(
+                initial,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  "P.A.R.E",
+                  style: TextStyle(
+                    color: primaryBlue,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                Text(
+                  "Protecting All Random Exchange",
+                  style: TextStyle(
+                    color: mutedColor,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+        SizedBox(
+          width: 40,
+          height: 40,
+          child: Image.asset('assets/icon/app_icon.png', fit: BoxFit.contain),
+        ),
+      ],
+    );
+  }
+
+  Widget _card({required Widget child, EdgeInsets? padding}) {
+    return Container(
+      width: double.infinity,
+      padding: padding ?? const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: surfaceColor,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: borderColor),
+      ),
+      child: child,
+    );
+  }
+
+  Widget _iconBadge(IconData icon, {Color? tint}) {
+    final color = tint ?? primaryBlue;
+    return Container(
+      width: 34,
+      height: 34,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Icon(icon, size: 17, color: color),
+    );
+  }
+
+  Widget _divider() => Divider(height: 1, thickness: 1, color: borderColor);
 
   // ─── Action badge ─────────────────────────────────────────────────────────────
 
   Widget _actionBadge(String action) {
-    Color bg;
     Color fg;
     IconData icon;
 
@@ -343,43 +472,30 @@ class _HistoryScreenState extends State<HistoryScreen>
       case 'Blocked':
       case 'Call Blocked':
       case 'High-Risk Alert Shown':
-        bg = const Color(0xFFFFEBEE);
-        fg = const Color(0xFFD32F2F);
+      case 'Block/Report Spam Opened':
+      case 'Message Opened for Blocking':
+        fg = dangerColor;
         icon = Icons.block_rounded;
         break;
       case 'Alert Shown':
       case 'Suspicious Voice Alert':
       case 'Alert Shown (Low Confidence)':
-        bg = const Color(0xFFFFF3E0);
-        fg = const Color(0xFFF57C00);
+        fg = warningColor;
         icon = Icons.warning_amber_rounded;
         break;
-      case 'Block/Report Spam Opened':
-        bg = const Color(0xFFFFEBEE);
-        fg = const Color(0xFFD32F2F);
-        icon = Icons.block_rounded;
-        break;
-      case 'Message Opened for Blocking':
-        bg = const Color(0xFFFFEBEE);
-        fg = const Color(0xFFD32F2F);
-        icon = Icons.block_rounded;
-        break;
-
       case 'Sender Blocked':
-        bg = const Color(0xFFE8F5E9);
-        fg = const Color(0xFF2E7D32);
+        fg = successColor;
         icon = Icons.check_circle_rounded;
         break;
       default:
-        bg = const Color(0xFFE8F5E9);
-        fg = const Color(0xFF388E3C);
+        fg = successColor;
         icon = Icons.check_circle_outline_rounded;
     }
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: bg,
+        color: fg.withValues(alpha: 0.10),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
@@ -403,31 +519,27 @@ class _HistoryScreenState extends State<HistoryScreen>
   // ─── Risk level badge (shown only in bottom sheet) ────────────────────────────
 
   Widget _riskBadge(String riskLevel) {
-    Color bg;
     Color fg;
     String label;
 
     switch (riskLevel) {
       case 'HIGH':
-        bg = const Color(0xFFFFEBEE);
-        fg = const Color(0xFFD32F2F);
+        fg = dangerColor;
         label = 'High Risk';
         break;
       case 'MEDIUM':
-        bg = const Color(0xFFFFF3E0);
-        fg = const Color(0xFFF57C00);
+        fg = warningColor;
         label = 'Medium Risk';
         break;
       default:
-        bg = const Color(0xFFE8F5E9);
-        fg = const Color(0xFF388E3C);
+        fg = successColor;
         label = 'Low Risk';
     }
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        color: bg,
+        color: fg.withValues(alpha: 0.10),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Text(
@@ -452,7 +564,7 @@ class _HistoryScreenState extends State<HistoryScreen>
               style: const TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
-                color: Colors.black45,
+                color: mutedColor,
               ),
             ),
           ),
@@ -483,7 +595,7 @@ class _HistoryScreenState extends State<HistoryScreen>
         expand: false,
         builder: (_, controller) => Container(
           decoration: const BoxDecoration(
-            color: Colors.white,
+            color: surfaceColor,
             borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
           ),
           padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
@@ -496,7 +608,7 @@ class _HistoryScreenState extends State<HistoryScreen>
                   width: 40,
                   height: 4,
                   decoration: BoxDecoration(
-                    color: Colors.grey.shade300,
+                    color: borderColor,
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
@@ -506,20 +618,11 @@ class _HistoryScreenState extends State<HistoryScreen>
               // Sender row
               Row(
                 children: [
-                  Container(
-                    width: 42,
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: primaryBlue.withValues(alpha: 0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(
-                      item['category'] == 'Calls'
-                          ? Icons.phone_rounded
-                          : Icons.sms_rounded,
-                      color: primaryBlue,
-                      size: 20,
-                    ),
+                  _iconBadge(
+                    item['category'] == 'Audio'
+                        ? Icons.phone_rounded
+                        : Icons.sms_rounded,
+                    tint: accentBlue,
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -531,14 +634,14 @@ class _HistoryScreenState extends State<HistoryScreen>
                           style: const TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w800,
-                            color: Colors.black87,
+                            color: inkColor,
                           ),
                         ),
                         Text(
                           item['date'],
                           style: const TextStyle(
                             fontSize: 12,
-                            color: Colors.black45,
+                            color: mutedColor,
                           ),
                         ),
                       ],
@@ -548,7 +651,7 @@ class _HistoryScreenState extends State<HistoryScreen>
               ),
 
               const SizedBox(height: 16),
-              const Divider(height: 1),
+              _divider(),
               const SizedBox(height: 16),
 
               // Scrollable content
@@ -564,7 +667,7 @@ class _HistoryScreenState extends State<HistoryScreen>
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.w700,
-                          color: Colors.black45,
+                          color: mutedColor,
                           letterSpacing: 0.4,
                         ),
                       ),
@@ -573,8 +676,9 @@ class _HistoryScreenState extends State<HistoryScreen>
                         width: double.infinity,
                         padding: const EdgeInsets.all(14),
                         decoration: BoxDecoration(
-                          color: const Color(0xFFF7F8FA),
+                          color: backgroundColor,
                           borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: borderColor),
                         ),
                         child: Text(
                           (item['message'] as String).isNotEmpty
@@ -582,7 +686,7 @@ class _HistoryScreenState extends State<HistoryScreen>
                               : '(No message content)',
                           style: const TextStyle(
                             fontSize: 14,
-                            color: Colors.black87,
+                            color: inkColor,
                             height: 1.6,
                           ),
                         ),
@@ -596,7 +700,7 @@ class _HistoryScreenState extends State<HistoryScreen>
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.w700,
-                          color: Colors.black45,
+                          color: mutedColor,
                           letterSpacing: 0.4,
                         ),
                       ),
@@ -611,9 +715,7 @@ class _HistoryScreenState extends State<HistoryScreen>
                                   ? Icons.check_circle_outline
                                   : Icons.warning_amber_rounded,
                               size: 14,
-                              color: safe
-                                  ? const Color(0xFF388E3C)
-                                  : const Color(0xFFD32F2F),
+                              color: safe ? successColor : dangerColor,
                             ),
                             const SizedBox(width: 5),
                             Text(
@@ -621,9 +723,7 @@ class _HistoryScreenState extends State<HistoryScreen>
                               style: TextStyle(
                                 fontSize: 13,
                                 fontWeight: FontWeight.w700,
-                                color: safe
-                                    ? const Color(0xFF388E3C)
-                                    : const Color(0xFFD32F2F),
+                                color: safe ? successColor : dangerColor,
                               ),
                             ),
                           ],
@@ -644,7 +744,7 @@ class _HistoryScreenState extends State<HistoryScreen>
                               child: LinearProgressIndicator(
                                 value: confidenceRaw / 100,
                                 minHeight: 7,
-                                backgroundColor: Colors.grey.shade200,
+                                backgroundColor: borderColor,
                                 valueColor: AlwaysStoppedAnimation<Color>(
                                   _confidenceColor(confidenceRaw, safe),
                                 ),
@@ -670,7 +770,7 @@ class _HistoryScreenState extends State<HistoryScreen>
                           style: const TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
-                            color: Colors.black87,
+                            color: inkColor,
                           ),
                         ),
                       ),
@@ -682,7 +782,7 @@ class _HistoryScreenState extends State<HistoryScreen>
                           style: const TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
-                            color: Colors.black87,
+                            color: inkColor,
                           ),
                         ),
                       ),
@@ -695,9 +795,11 @@ class _HistoryScreenState extends State<HistoryScreen>
                           width: double.infinity,
                           padding: const EdgeInsets.all(14),
                           decoration: BoxDecoration(
-                            color: const Color(0xFFFFEBEE),
+                            color: dangerColor.withValues(alpha: 0.06),
                             borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: const Color(0xFFFFCDD2)),
+                            border: Border.all(
+                              color: dangerColor.withValues(alpha: 0.25),
+                            ),
                           ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -706,7 +808,7 @@ class _HistoryScreenState extends State<HistoryScreen>
                                 children: [
                                   Icon(
                                     Icons.warning_amber_rounded,
-                                    color: Color(0xFFD32F2F),
+                                    color: dangerColor,
                                     size: 20,
                                   ),
                                   SizedBox(width: 8),
@@ -716,7 +818,7 @@ class _HistoryScreenState extends State<HistoryScreen>
                                       style: TextStyle(
                                         fontSize: 14,
                                         fontWeight: FontWeight.w800,
-                                        color: Color(0xFFD32F2F),
+                                        color: dangerColor,
                                       ),
                                     ),
                                   ),
@@ -730,7 +832,7 @@ class _HistoryScreenState extends State<HistoryScreen>
                                 'your messaging app.',
                                 style: TextStyle(
                                   fontSize: 12,
-                                  color: Colors.black54,
+                                  color: mutedColor,
                                   height: 1.4,
                                 ),
                               ),
@@ -757,8 +859,9 @@ class _HistoryScreenState extends State<HistoryScreen>
                                     ),
                                   ),
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor: const Color(0xFFD32F2F),
+                                    backgroundColor: dangerColor,
                                     foregroundColor: Colors.white,
+                                    elevation: 0,
                                     shape: RoundedRectangleBorder(
                                       borderRadius: BorderRadius.circular(10),
                                     ),
@@ -788,25 +891,35 @@ class _HistoryScreenState extends State<HistoryScreen>
     final confirm = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text(
-          'Clear History?',
-          style: TextStyle(fontWeight: FontWeight.w800),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: Row(
+          children: const [
+            Icon(Icons.delete_outline_rounded, color: dangerColor),
+            SizedBox(width: 8),
+            Text(
+              'Clear History?',
+              style: TextStyle(fontWeight: FontWeight.w800, color: inkColor),
+            ),
+          ],
         ),
         content: const Text(
           'This will permanently delete all scam detection records. '
           'This action cannot be undone.',
+          style: TextStyle(color: mutedColor, fontSize: 13, height: 1.4),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: mutedColor, fontWeight: FontWeight.w700),
+            ),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
             child: const Text(
               'Clear',
-              style: TextStyle(color: Color(0xFFD32F2F)),
+              style: TextStyle(color: dangerColor, fontWeight: FontWeight.w700),
             ),
           ),
         ],
@@ -825,7 +938,7 @@ class _HistoryScreenState extends State<HistoryScreen>
 
   List<Map<String, dynamic>> get filteredHistory {
     if (selectedFilter == 1) {
-      return history.where((item) => item['category'] == 'Calls').toList();
+      return history.where((item) => item['category'] == 'Audio').toList();
     }
     if (selectedFilter == 2) {
       return history.where((item) => item['category'] == 'Messages').toList();
@@ -833,47 +946,7 @@ class _HistoryScreenState extends State<HistoryScreen>
     return history;
   }
 
-  // ─── Header ───────────────────────────────────────────────────────────────────
-
-  Widget _header() {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: const [
-            Text(
-              "P.A.R.E",
-              style: TextStyle(
-                color: primaryBlue,
-                fontSize: 30,
-                fontWeight: FontWeight.w900,
-              ),
-            ),
-            Text(
-              "Phishing & Response Engine",
-              style: TextStyle(
-                color: Colors.black45,
-                fontSize: 11,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ],
-        ),
-        Container(
-          width: 44,
-          height: 44,
-          decoration: const BoxDecoration(
-            color: Color.fromRGBO(9, 44, 86, 0.10),
-            shape: BoxShape.circle,
-          ),
-          child: const Icon(Icons.security, color: primaryBlue, size: 26),
-        ),
-      ],
-    );
-  }
-
-  // ─── Filter buttons ───────────────────────────────────────────────────────────
+  // ─── Filter tabs ──────────────────────────────────────────────────────────────
 
   Widget _filterButton(String text, int index) {
     final selected = selectedFilter == index;
@@ -883,15 +956,17 @@ class _HistoryScreenState extends State<HistoryScreen>
         child: Container(
           height: 42,
           decoration: BoxDecoration(
-            color: selected ? primaryBlue : Colors.grey.shade300,
+            color: selected ? primaryBlue : surfaceColor,
             borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: selected ? primaryBlue : borderColor),
           ),
           alignment: Alignment.center,
           child: Text(
             text,
             style: TextStyle(
-              color: selected ? Colors.white : Colors.black87,
+              color: selected ? Colors.white : inkColor,
               fontWeight: FontWeight.w700,
+              fontSize: 13,
             ),
           ),
         ),
@@ -909,7 +984,7 @@ class _HistoryScreenState extends State<HistoryScreen>
           '$count ${count == 1 ? 'record' : 'records'}',
           style: const TextStyle(
             fontSize: 13,
-            color: Colors.black45,
+            color: mutedColor,
             fontWeight: FontWeight.w500,
           ),
         ),
@@ -917,9 +992,10 @@ class _HistoryScreenState extends State<HistoryScreen>
           GestureDetector(
             onTap: _confirmClearHistory,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
-                border: Border.all(color: primaryBlue, width: 1.2),
+                color: surfaceColor,
+                border: Border.all(color: borderColor),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Row(
@@ -947,7 +1023,7 @@ class _HistoryScreenState extends State<HistoryScreen>
     );
   }
 
-  // ─── History tile (clean — no extra detail here) ──────────────────────────────
+  // ─── History tile — now a bordered surface card, matching Home's _card ───────
 
   Widget _historyTile(Map<String, dynamic> item) {
     final bool safe = item['safe'];
@@ -959,141 +1035,156 @@ class _HistoryScreenState extends State<HistoryScreen>
       onTap: () => _showMessageBottomSheet(context, item),
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        decoration: BoxDecoration(
-          color: cardColor,
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: primaryBlue.withValues(alpha: 0.1),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(
-                  item['category'] == 'Calls' ? Icons.phone : Icons.sms,
-                  color: primaryBlue,
-                  size: 18,
+        child: _card(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: _iconBadge(
+                  item['category'] == 'Audio' ? Icons.phone : Icons.sms,
+                  tint: accentBlue,
                 ),
               ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Name + result
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          item['name'],
-                          style: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w800,
-                            color: Colors.black87,
-                          ),
-                        ),
-                      ),
-                      Icon(
-                        safe
-                            ? Icons.check_circle_outline
-                            : Icons.warning_amber_rounded,
-                        size: 14,
-                        color: safe
-                            ? const Color(0xFF388E3C)
-                            : const Color(0xFFD32F2F),
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        item['result'],
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                          color: safe
-                              ? const Color(0xFF388E3C)
-                              : const Color(0xFFD32F2F),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 3),
-                  // Date
-                  Text(
-                    item['date'],
-                    style: const TextStyle(fontSize: 11, color: Colors.black45),
-                  ),
-                  // Message preview
-                  if (message.isNotEmpty) ...[
-                    const SizedBox(height: 7),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Name + result
                     Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         Expanded(
                           child: Text(
-                            message,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
+                            item['name'],
                             style: const TextStyle(
-                              fontSize: 12,
-                              color: Colors.black54,
-                              height: 1.4,
+                              fontSize: 15,
+                              fontWeight: FontWeight.w800,
+                              color: inkColor,
                             ),
                           ),
                         ),
-                        if (isLong) ...[
-                          const SizedBox(width: 4),
-                          const Text(
-                            'more',
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: primaryBlue,
-                              fontWeight: FontWeight.w700,
-                            ),
+                        Icon(
+                          safe
+                              ? Icons.check_circle_outline
+                              : Icons.warning_amber_rounded,
+                          size: 14,
+                          color: safe ? successColor : dangerColor,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          item['result'],
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: safe ? successColor : dangerColor,
                           ),
-                        ],
+                        ),
                       ],
                     ),
-                  ],
-                  const SizedBox(height: 10),
-                  // Confidence bar
-                  Row(
-                    children: [
-                      Expanded(
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(4),
-                          child: LinearProgressIndicator(
-                            value: confidenceRaw / 100,
-                            minHeight: 6,
-                            backgroundColor: Colors.grey.shade200,
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                              _confidenceColor(confidenceRaw, safe),
+                    const SizedBox(height: 3),
+                    // Date
+                    Text(
+                      item['date'],
+                      style: const TextStyle(fontSize: 11, color: mutedColor),
+                    ),
+                    // Message preview
+                    if (message.isNotEmpty) ...[
+                      const SizedBox(height: 7),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              message,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: mutedColor,
+                                height: 1.4,
+                              ),
+                            ),
+                          ),
+                          if (isLong) ...[
+                            const SizedBox(width: 4),
+                            const Text(
+                              'more',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: primaryBlue,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ],
+                    const SizedBox(height: 10),
+                    // Confidence bar
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: LinearProgressIndicator(
+                              value: confidenceRaw / 100,
+                              minHeight: 6,
+                              backgroundColor: borderColor,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                _confidenceColor(confidenceRaw, safe),
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        item['confidence'],
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          color: _confidenceColor(confidenceRaw, safe),
+                        const SizedBox(width: 8),
+                        Text(
+                          item['confidence'],
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: _confidenceColor(confidenceRaw, safe),
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 7),
-                  // Action badge
-                  _actionBadge(item['action']),
-                ],
+                      ],
+                    ),
+                    const SizedBox(height: 7),
+                    // Action badge
+                    _actionBadge(item['action']),
+                  ],
+                ),
               ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ─── Empty state — styled like Home's status card ────────────────────────────
+
+  Widget _emptyState() {
+    return Padding(
+      padding: const EdgeInsets.only(top: 40),
+      child: _card(
+        child: Column(
+          children: [
+            _iconBadge(Icons.history_rounded, tint: mutedColor),
+            const SizedBox(height: 12),
+            const Text(
+              "No history yet",
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+                color: inkColor,
+              ),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              "Detected audio and messages will show up here.",
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 12, color: mutedColor),
             ),
           ],
         ),
@@ -1111,17 +1202,17 @@ class _HistoryScreenState extends State<HistoryScreen>
       backgroundColor: backgroundColor,
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 18, 14, 0),
+          padding: const EdgeInsets.fromLTRB(16, 18, 16, 0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _header(),
-              const SizedBox(height: 16),
+              const SizedBox(height: 18),
               Row(
                 children: [
                   _filterButton("All", 0),
                   const SizedBox(width: 8),
-                  _filterButton("Calls", 1),
+                  _filterButton("Audio", 1),
                   const SizedBox(width: 8),
                   _filterButton("Messages", 2),
                 ],
@@ -1132,21 +1223,11 @@ class _HistoryScreenState extends State<HistoryScreen>
               Expanded(
                 child: RefreshIndicator(
                   onRefresh: _loadHistory,
+                  color: primaryBlue,
                   child: items.isEmpty
                       ? ListView(
                           physics: const AlwaysScrollableScrollPhysics(),
-                          children: const [
-                            SizedBox(height: 250),
-                            Center(
-                              child: Text(
-                                "No history yet",
-                                style: TextStyle(
-                                  fontSize: 15,
-                                  color: Colors.black45,
-                                ),
-                              ),
-                            ),
-                          ],
+                          children: [_emptyState()],
                         )
                       : ListView.builder(
                           physics: const AlwaysScrollableScrollPhysics(),

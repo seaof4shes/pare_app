@@ -43,43 +43,130 @@ class CallAnalysisService {
       };
     }
 
-    final bool isSafe = result['safe'] == true;
-
-    final String action =
-        result['action'] ?? (isSafe ? 'Allowed' : 'Alert Shown');
-
     final String historyType = isDemo ? 'Voice Demo Test' : 'Voice Call';
     final String historyName = isDemo ? 'Manual Voice Test' : callerName;
 
-    final String message;
+    final String message = _buildCallMessage(
+      result: result,
+      isDemo: isDemo,
+      callerNumber: callerNumber,
+    );
 
+    return _finalizeAndSave(
+      result: result,
+      historyType: historyType,
+      historyName: historyName,
+      callerNumber: callerNumber,
+      message: message,
+      category: 'Calls',
+    );
+  }
+
+  /// NEW: analyze a WAV file the user picked from storage, instead of
+  /// recording live audio. Reuses the same detection model and history
+  /// pipeline as analyzeCall — analyzeCall's own behavior is unchanged.
+  Future<Map<String, dynamic>?> analyzeUploadedFile(
+    String filePath, {
+    required String fileName,
+  }) async {
+    Map<String, dynamic> result;
+
+    try {
+      result = await _detectionService.analyzeAudioFile(
+        filePath,
+        fileName: fileName,
+      );
+    } catch (e) {
+      result = {
+        'label': 'Voice Detection Error',
+        'result': -1,
+        'confidence': 0.0,
+        'fakeScore': 0.0,
+        'safe': false,
+        'action': 'Upload Logged Only',
+      };
+    }
+
+    final String message = _buildUploadMessage(
+      result: result,
+      fileName: fileName,
+    );
+
+    return _finalizeAndSave(
+      result: result,
+      historyType: 'Voice Upload',
+      historyName: fileName,
+      callerNumber: 'Uploaded File',
+      message: message,
+      category: 'Calls',
+    );
+  }
+
+  String _buildCallMessage({
+    required Map<String, dynamic> result,
+    required bool isDemo,
+    required String callerNumber,
+  }) {
     switch (result['result'] as int) {
       case -1:
-        message = isDemo
+        return isDemo
             ? 'Manual microphone voice test was recorded, but the model could not classify it.'
             : 'No usable audio captured from $callerNumber';
-        break;
       case 0:
         final conf = (result['confidence'] as num).toDouble().toStringAsFixed(
           2,
         );
-        message = isDemo
+        return isDemo
             ? 'Manual microphone test analysed — $conf% human confidence.'
             : 'Voice analysed — $conf% human confidence ($callerNumber)';
-        break;
       case 1:
         final conf = (result['confidence'] as num).toDouble().toStringAsFixed(
           2,
         );
-        message = isDemo
+        return isDemo
             ? 'Manual microphone test detected possible AI voice — $conf% confidence.'
             : 'Potential AI voice detected — $conf% confidence ($callerNumber)';
-        break;
       default:
-        message = isDemo
+        return isDemo
             ? 'Manual 10-second microphone voice sample analysed.'
             : '10-second voice sample analysed from $callerNumber';
     }
+  }
+
+  String _buildUploadMessage({
+    required Map<String, dynamic> result,
+    required String fileName,
+  }) {
+    switch (result['result'] as int) {
+      case -1:
+        return 'Uploaded file "$fileName" was analysed, but the model could not classify it.';
+      case 0:
+        final conf = (result['confidence'] as num).toDouble().toStringAsFixed(
+          2,
+        );
+        return 'Uploaded file "$fileName" analysed — $conf% human confidence.';
+      case 1:
+        final conf = (result['confidence'] as num).toDouble().toStringAsFixed(
+          2,
+        );
+        return 'Uploaded file "$fileName" flagged as possible AI voice — $conf% confidence.';
+      default:
+        return 'Uploaded file "$fileName" analysed.';
+    }
+  }
+
+  Future<Map<String, dynamic>?> _finalizeAndSave({
+    required Map<String, dynamic> result,
+    required String historyType,
+    required String historyName,
+    required String callerNumber,
+    required String message,
+    required String category,
+  }) async {
+    final bool isSafe = result['safe'] == true;
+
+    final String action =
+        result['action'] ?? (isSafe ? 'Allowed' : 'Alert Shown');
 
     final prefs = await SharedPreferences.getInstance();
     final currentPhone = prefs.getString('phone') ?? '';
@@ -87,12 +174,13 @@ class CallAnalysisService {
     await DatabaseHelper.instance.insertHistory({
       'userPhone': currentPhone,
       'name': historyName,
+      'senderNumber': callerNumber,
       'type': historyType,
       'message': await LocalCryptoService.instance.encryptText(message),
       'result': result['label'],
       'confidence': result['confidence'],
       'action': action,
-      'category': 'Calls',
+      'category': category,
       'safe': isSafe ? 1 : 0,
       'keywordScore': 0,
       'riskLevel': result['label'].toString().toLowerCase().contains('deepfake')

@@ -4,253 +4,932 @@ import 'dart:typed_data';
 
 class VoiceMfccExtractor {
   static const int sampleRate = 16000;
+  static const int targetSamples = 80000; // 5 seconds
   static const int nMfcc = 40;
-  static const int timeFrames = 157;
+  static const int nMels = 40;
+
+  // IMPORTANT:
+  // librosa.feature.mfcc() uses 128 Mel bands internally
+  // when n_mels is not explicitly specified.
+  static const int mfccMels = 128;
+
   static const int fftSize = 2048;
   static const int hopLength = 512;
-  static const int nMels = 128;
-  static const double fMin = 0.0;
-  static const double fMax = 8000.0;
+  static const int targetFrames = 157;
 
-  // Exact number of samples needed for 157 frames:
-  // (timeFrames - 1) * hopLength + fftSize = 156 * 512 + 2048 = 82_432
-  static const int targetSamples = 82432;
+  List<double>? _hannWindow;
+  List<List<double>>? _melFilterbank40;
+  List<List<double>>? _melFilterbank128;
+  List<List<double>>? _dctMatrix;
 
-  List<Float32List>? _melFilterbank;
+  // ============================================================
+  // MAIN FEATURE EXTRACTION
+  // ============================================================
 
   Future<Float32List> extractFromWav(String path) async {
-    final bytes = await File(path).readAsBytes();
-    final headerOffset = _getWavDataOffset(bytes);
-    final pcmBytes = bytes.sublist(headerOffset);
+    final wav = await _readWav(path);
 
-    // ── 1. Decode PCM → float32, pad/trim to exactly targetSamples ──
-    final byteData = ByteData.sublistView(Uint8List.fromList(pcmBytes));
-    final sampleCount = byteData.lengthInBytes ~/ 2;
-    final samples = Float32List(targetSamples); // zero-padded by default
+    List<double> audio = wav.samples;
+    final int originalSampleRate = wav.sampleRate;
 
-    final readCount = min(sampleCount, targetSamples);
-    for (int i = 0; i < readCount; i++) {
-      samples[i] = byteData.getInt16(i * 2, Endian.little) / 32768.0;
+    // ------------------------------------------------------------
+    // Resample to 16 kHz if necessary
+    // ------------------------------------------------------------
+
+    if (originalSampleRate != sampleRate) {
+      audio = _resampleLinear(audio, originalSampleRate, sampleRate);
     }
 
-    // ── 2. Build filterbank once ──
-    _melFilterbank ??= _buildMelFilterbank();
+    // ------------------------------------------------------------
+    // Make audio exactly 5 seconds / 80,000 samples
+    // ------------------------------------------------------------
 
-    // ── 3. Compute MFCCs frame by frame ──
-    // Layout: features[mfcc_index * timeFrames + time_index]  →  shape (40, 157)
-    final features = Float32List(nMfcc * timeFrames);
+    if (audio.length > targetSamples) {
+      audio = audio.sublist(0, targetSamples);
+    } else if (audio.length < targetSamples) {
+      final padded = List<double>.filled(targetSamples, 0.0);
 
-    for (int t = 0; t < timeFrames; t++) {
-      final start = t * hopLength;
-      final frame = Float32List(fftSize);
-
-      for (int i = 0; i < fftSize; i++) {
-        final idx = start + i;
-        frame[i] = idx < samples.length ? samples[idx] : 0.0;
+      for (int i = 0; i < audio.length; i++) {
+        padded[i] = audio[i];
       }
 
-      _applyHannWindow(frame);
-
-      final power = _powerSpectrum(frame);
-      final logMel = _applyMelFilterbank(power, _melFilterbank!);
-      final mfccs = _dct(logMel); // length = nMfcc
-
-      for (int m = 0; m < nMfcc; m++) {
-        features[m * timeFrames + t] = mfccs[m];
-      }
+      audio = padded;
     }
 
-    // ── 4. Global mean/std normalisation — matches predict.py exactly ──
-    //   mfcc = (mfcc - np.mean(mfcc)) / (np.std(mfcc) + 1e-6)
-    return _normalize(features);
-  }
+    // ------------------------------------------------------------
+    // Match librosa's centered STFT behavior
+    //
+    // librosa center=True with n_fft=2048 effectively pads
+    // 1024 samples on both sides.
+    // ------------------------------------------------------------
 
-  // ── WAV header parser ────────────────────────────────────────────────────
+    final List<double> centeredAudio = _centerPad(audio);
 
-  int _getWavDataOffset(Uint8List bytes) {
-    for (int i = 12; i < bytes.length - 8; i++) {
-      if (bytes[i] == 0x64 && // d
-          bytes[i + 1] == 0x61 && // a
-          bytes[i + 2] == 0x74 && // t
-          bytes[i + 3] == 0x61) {
-        // a
-        return i + 8;
-      }
-    }
-    return 44; // fallback
-  }
+    // ------------------------------------------------------------
+    // Initialize cached components
+    // ------------------------------------------------------------
 
-  // ── Signal processing ────────────────────────────────────────────────────
+    _hannWindow ??= _buildHannWindow();
 
-  void _applyHannWindow(Float32List frame) {
-    final n = frame.length;
-    for (int i = 0; i < n; i++) {
-      frame[i] *= 0.5 * (1.0 - cos(2.0 * pi * i / (n - 1)));
-    }
-  }
+    _melFilterbank40 ??= _buildMelFilterbank(nMels);
 
-  Float32List _powerSpectrum(Float32List frame) {
-    final real = Float64List(fftSize);
-    final imag = Float64List(fftSize);
-    for (int i = 0; i < fftSize; i++) {
-      real[i] = frame[i];
-    }
+    _melFilterbank128 ??= _buildMelFilterbank(mfccMels);
 
-    _fft(real, imag);
+    _dctMatrix ??= _buildDctMatrix(nMfcc, mfccMels);
 
-    final halfN = fftSize ~/ 2 + 1;
-    final power = Float32List(halfN);
-    for (int i = 0; i < halfN; i++) {
-      power[i] = (real[i] * real[i] + imag[i] * imag[i]).toDouble();
-    }
-    return power;
-  }
+    // ------------------------------------------------------------
+    // MFCC
+    //
+    // This must use 128 Mel bands because the Python code uses:
+    //
+    // librosa.feature.mfcc(
+    //     y=audio,
+    //     sr=sr,
+    //     n_mfcc=40
+    // )
+    //
+    // librosa defaults to 128 Mel bands internally.
+    // ------------------------------------------------------------
 
-  void _fft(Float64List real, Float64List imag) {
-    final n = real.length;
+    final List<Float32List> mfcc = _extractMfcc(centeredAudio);
 
-    // Bit-reversal
-    int j = 0;
-    for (int i = 1; i < n; i++) {
-      int bit = n >> 1;
-      for (; j & bit != 0; bit >>= 1) {
-        j ^= bit;
-      }
-      j ^= bit;
-      if (i < j) {
-        var t = real[i];
-        real[i] = real[j];
-        real[j] = t;
-        t = imag[i];
-        imag[i] = imag[j];
-        imag[j] = t;
-      }
-    }
+    // ------------------------------------------------------------
+    // 40-band Log-Mel Spectrogram
+    //
+    // Python:
+    //
+    // librosa.feature.melspectrogram(
+    //     y=audio,
+    //     sr=sr,
+    //     n_mels=40
+    // )
+    // ------------------------------------------------------------
 
-    // Butterfly
-    for (int len = 2; len <= n; len <<= 1) {
-      final ang = -2.0 * pi / len;
-      final wRe = cos(ang);
-      final wIm = sin(ang);
-      for (int i = 0; i < n; i += len) {
-        double cRe = 1.0, cIm = 0.0;
-        for (int k = 0; k < len ~/ 2; k++) {
-          final uRe = real[i + k];
-          final uIm = imag[i + k];
-          final vRe =
-              real[i + k + len ~/ 2] * cRe - imag[i + k + len ~/ 2] * cIm;
-          final vIm =
-              real[i + k + len ~/ 2] * cIm + imag[i + k + len ~/ 2] * cRe;
-          real[i + k] = uRe + vRe;
-          imag[i + k] = uIm + vIm;
-          real[i + k + len ~/ 2] = uRe - vRe;
-          imag[i + k + len ~/ 2] = uIm - vIm;
-          final nCRe = cRe * wRe - cIm * wIm;
-          cIm = cRe * wIm + cIm * wRe;
-          cRe = nCRe;
-        }
-      }
-    }
-  }
-
-  // ── Mel filterbank ───────────────────────────────────────────────────────
-  // Matches librosa.filters.mel() exactly:
-  //   - mel points spaced linearly in mel scale
-  //   - bin indices computed via hz-to-bin formula (not indexWhere)
-  //   - triangular filters normalised by filter width (norm=None by default)
-
-  List<Float32List> _buildMelFilterbank() {
-    final halfN = fftSize ~/ 2 + 1;
-    final melMin = _hzToMel(fMin);
-    final melMax = _hzToMel(fMax);
-
-    // nMels + 2 equally spaced mel points
-    final melPts = List<double>.generate(
-      nMels + 2,
-      (i) => melMin + i * (melMax - melMin) / (nMels + 1),
+    final List<Float32List> logMel = _extractLogMel(
+      centeredAudio,
+      _melFilterbank40!,
     );
 
-    // Convert to Hz then to FFT bin index (fractional)
-    final binPts = melPts.map((m) {
-      final hz = _melToHz(m);
-      return hz * fftSize / sampleRate; // fractional bin
-    }).toList();
+    // ------------------------------------------------------------
+    // Normalize exactly after feature extraction
+    //
+    // Python does:
+    //
+    // mfcc = (mfcc - mean) / (std + 1e-6)
+    // mel  = (mel  - mean) / (std + 1e-6)
+    // ------------------------------------------------------------
 
-    final fb = List<Float32List>.generate(nMels, (_) => Float32List(halfN));
+    _normalizeInPlace(mfcc);
+    _normalizeInPlace(logMel);
 
-    for (int m = 1; m <= nMels; m++) {
-      final left = binPts[m - 1];
-      final center = binPts[m];
-      final right = binPts[m + 1];
+    // ------------------------------------------------------------
+    // Combine:
+    //
+    // [40 MFCC, 157 frames, 1]
+    // +
+    // [40 Log-Mel, 157 frames, 1]
+    //
+    // =
+    // [40, 157, 2]
+    // ------------------------------------------------------------
 
-      for (int k = 0; k < halfN; k++) {
-        final kd = k.toDouble();
-        if (kd > left && kd < center) {
-          fb[m - 1][k] = (kd - left) / (center - left);
-        } else if (kd >= center && kd < right) {
-          fb[m - 1][k] = (right - kd) / (right - center);
+    final Float32List combined = Float32List(nMfcc * targetFrames * 2);
+
+    int index = 0;
+
+    for (int m = 0; m < nMfcc; m++) {
+      for (int frame = 0; frame < targetFrames; frame++) {
+        combined[index++] = mfcc[m][frame];
+        combined[index++] = logMel[m][frame];
+      }
+    }
+
+    return combined;
+  }
+
+  // ============================================================
+  // MFCC EXTRACTION
+  // ============================================================
+
+  List<Float32List> _extractMfcc(List<double> samples) {
+    final int nFft = fftSize;
+    final int hop = hopLength;
+
+    // With 80,000 samples + 1024 center padding:
+    //
+    // frameCount = 1 + floor((82048 - 2048) / 512)
+    //            = 157
+    //
+    // This matches librosa's expected 157 frames.
+    final int frameCount = ((samples.length - nFft) ~/ hop) + 1;
+
+    final List<Float32List> mfcc = List.generate(
+      nMfcc,
+      (_) => Float32List(frameCount),
+    );
+
+    final List<List<double>> melFilterbank = _melFilterbank128 ??=
+        _buildMelFilterbank(mfccMels);
+
+    final List<List<double>> dct = _dctMatrix ??= _buildDctMatrix(
+      nMfcc,
+      mfccMels,
+    );
+
+    // ------------------------------------------------------------
+    // First calculate the complete Mel spectrogram.
+    //
+    // This is important because librosa.power_to_db uses the
+    // maximum value of the WHOLE spectrogram when ref=np.max.
+    // ------------------------------------------------------------
+
+    final List<List<double>> melPower = List.generate(
+      mfccMels,
+      (_) => List<double>.filled(frameCount, 0.0),
+    );
+
+    final Float64List window = Float64List(nFft);
+
+    final Float64List real = Float64List(nFft);
+    final Float64List imag = Float64List(nFft);
+
+    for (int frame = 0; frame < frameCount; frame++) {
+      final int start = frame * hop;
+
+      // ----------------------------------------------------------
+      // Apply Hann window
+      // ----------------------------------------------------------
+
+      for (int i = 0; i < nFft; i++) {
+        final int sampleIndex = start + i;
+
+        final double sample = sampleIndex < samples.length
+            ? samples[sampleIndex]
+            : 0.0;
+
+        window[i] = sample * _hannWindow![i];
+      }
+
+      // ----------------------------------------------------------
+      // Prepare FFT arrays
+      // ----------------------------------------------------------
+
+      for (int i = 0; i < nFft; i++) {
+        real[i] = window[i];
+        imag[i] = 0.0;
+      }
+
+      _fft(real, imag);
+
+      // ----------------------------------------------------------
+      // Power spectrum
+      // ----------------------------------------------------------
+
+      final int positiveBins = nFft ~/ 2 + 1;
+
+      final Float64List power = Float64List(positiveBins);
+
+      for (int k = 0; k < positiveBins; k++) {
+        final double r = real[k];
+        final double im = imag[k];
+
+        power[k] = (r * r + im * im) / nFft;
+      }
+
+      // ----------------------------------------------------------
+      // Apply 128-band Mel filterbank
+      // ----------------------------------------------------------
+
+      for (int mel = 0; mel < mfccMels; mel++) {
+        double sum = 0.0;
+
+        final List<double> filter = melFilterbank[mel];
+
+        final int maxBin = min(positiveBins, filter.length);
+
+        for (int k = 0; k < maxBin; k++) {
+          final double weight = filter[k];
+
+          if (weight != 0.0) {
+            sum += power[k] * weight;
+          }
+        }
+
+        melPower[mel][frame] = sum;
+      }
+    }
+
+    // ------------------------------------------------------------
+    // Find GLOBAL maximum.
+    //
+    // Python:
+    // librosa.power_to_db(mel, ref=np.max)
+    //
+    // So the reference is the maximum of the entire Mel
+    // spectrogram, NOT the maximum of each frame.
+    // ------------------------------------------------------------
+
+    double globalMax = 0.0;
+
+    for (int mel = 0; mel < mfccMels; mel++) {
+      for (int frame = 0; frame < frameCount; frame++) {
+        if (melPower[mel][frame] > globalMax) {
+          globalMax = melPower[mel][frame];
         }
       }
     }
 
-    return fb;
-  }
-
-  Float32List _applyMelFilterbank(Float32List power, List<Float32List> fb) {
-    final logMel = Float32List(nMels);
-    for (int m = 0; m < nMels; m++) {
-      double energy = 0.0;
-      for (int k = 0; k < power.length; k++) {
-        energy += fb[m][k] * power[k];
-      }
-      logMel[m] = log(energy + 1e-6);
+    if (globalMax <= 0.0) {
+      globalMax = 1e-10;
     }
-    return logMel;
-  }
 
-  // ── DCT-II with ortho normalisation — matches librosa/scipy exactly ──────
-  // scipy.fft.dct(x, type=2, norm='ortho') scaling:
-  //   k=0 : x[k] *= sqrt(1 / (4N))   → factor = sqrt(1/(4*N))
-  //   k>0 : x[k] *= sqrt(1 / (2N))   → factor = sqrt(1/(2*N))
-  List<double> _dct(Float32List input) {
-    final n = input.length; // nMels = 128
-    final out = List<double>.filled(nMfcc, 0.0);
+    // ------------------------------------------------------------
+    // Convert power to dB.
+    //
+    // librosa.power_to_db(..., ref=np.max)
+    // default top_db = 80
+    // ------------------------------------------------------------
 
-    for (int k = 0; k < nMfcc; k++) {
-      double sum = 0.0;
-      for (int i = 0; i < n; i++) {
-        sum += input[i] * cos(pi * k * (2 * i + 1) / (2 * n));
+    final double referenceDb = 10.0 * log(globalMax) / ln10;
+
+    final double minimumDb = referenceDb - 80.0;
+
+    for (int mel = 0; mel < mfccMels; mel++) {
+      for (int frame = 0; frame < frameCount; frame++) {
+        double value = melPower[mel][frame];
+
+        if (value < 1e-10) {
+          value = 1e-10;
+        }
+
+        double db = 10.0 * log(value) / ln10;
+
+        if (db < minimumDb) {
+          db = minimumDb;
+        }
+
+        melPower[mel][frame] = db;
       }
-      // Orthonormal scaling
-      out[k] = k == 0
-          ? sum * sqrt(1.0 / (4.0 * n))
-          : sum * sqrt(1.0 / (2.0 * n));
     }
-    return out;
+
+    // ------------------------------------------------------------
+    // DCT-II
+    //
+    // Convert 128 Mel coefficients -> 40 MFCC coefficients.
+    // ------------------------------------------------------------
+
+    for (int coefficient = 0; coefficient < nMfcc; coefficient++) {
+      for (int frame = 0; frame < frameCount; frame++) {
+        double sum = 0.0;
+
+        for (int mel = 0; mel < mfccMels; mel++) {
+          sum += dct[coefficient][mel] * melPower[mel][frame];
+        }
+
+        mfcc[coefficient][frame] = sum;
+      }
+    }
+
+    return mfcc;
   }
 
-  // ── Helpers ──────────────────────────────────────────────────────────────
+  // ============================================================
+  // LOG-MEL EXTRACTION
+  // ============================================================
 
-  double _hzToMel(double hz) => 2595.0 * log(1.0 + hz / 700.0) / ln10;
-  double _melToHz(double mel) => 700.0 * (pow(10.0, mel / 2595.0) - 1.0);
+  List<Float32List> _extractLogMel(
+    List<double> samples,
+    List<List<double>> filterbank,
+  ) {
+    final int nFft = fftSize;
+    final int hop = hopLength;
 
-  Float32List _normalize(Float32List data) {
+    final int frameCount = ((samples.length - nFft) ~/ hop) + 1;
+
+    final List<Float32List> result = List.generate(
+      nMels,
+      (_) => Float32List(frameCount),
+    );
+
+    final Float64List window = Float64List(nFft);
+
+    final Float64List real = Float64List(nFft);
+
+    final Float64List imag = Float64List(nFft);
+
+    final int positiveBins = nFft ~/ 2 + 1;
+
+    // ------------------------------------------------------------
+    // Calculate Mel power spectrogram
+    // ------------------------------------------------------------
+
+    final List<List<double>> melPower = List.generate(
+      nMels,
+      (_) => List<double>.filled(frameCount, 0.0),
+    );
+
+    for (int frame = 0; frame < frameCount; frame++) {
+      final int start = frame * hop;
+
+      for (int i = 0; i < nFft; i++) {
+        final int sampleIndex = start + i;
+
+        final double sample = sampleIndex < samples.length
+            ? samples[sampleIndex]
+            : 0.0;
+
+        window[i] = sample * _hannWindow![i];
+      }
+
+      for (int i = 0; i < nFft; i++) {
+        real[i] = window[i];
+        imag[i] = 0.0;
+      }
+
+      _fft(real, imag);
+
+      for (int mel = 0; mel < nMels; mel++) {
+        double sum = 0.0;
+
+        final List<double> filter = filterbank[mel];
+
+        for (int k = 0; k < positiveBins; k++) {
+          final double weight = filter[k];
+
+          if (weight != 0.0) {
+            final double r = real[k];
+
+            final double im = imag[k];
+
+            final double power = (r * r + im * im) / nFft;
+
+            sum += power * weight;
+          }
+        }
+
+        melPower[mel][frame] = sum;
+      }
+    }
+
+    // ------------------------------------------------------------
+    // Find global maximum
+    // ------------------------------------------------------------
+
+    double globalMax = 0.0;
+
+    for (int mel = 0; mel < nMels; mel++) {
+      for (int frame = 0; frame < frameCount; frame++) {
+        if (melPower[mel][frame] > globalMax) {
+          globalMax = melPower[mel][frame];
+        }
+      }
+    }
+
+    if (globalMax <= 0.0) {
+      globalMax = 1e-10;
+    }
+
+    final double referenceDb = 10.0 * log(globalMax) / ln10;
+
+    final double minimumDb = referenceDb - 80.0;
+
+    // ------------------------------------------------------------
+    // Convert to Log-Mel dB
+    // ------------------------------------------------------------
+
+    for (int mel = 0; mel < nMels; mel++) {
+      for (int frame = 0; frame < frameCount; frame++) {
+        double value = melPower[mel][frame];
+
+        if (value < 1e-10) {
+          value = 1e-10;
+        }
+
+        double db = 10.0 * log(value) / ln10;
+
+        if (db < minimumDb) {
+          db = minimumDb;
+        }
+
+        result[mel][frame] = db;
+      }
+    }
+
+    return result;
+  }
+
+  // ============================================================
+  // NORMALIZATION
+  // ============================================================
+
+  void _normalizeInPlace(List<Float32List> matrix) {
     double sum = 0.0;
-    for (final v in data) {
-      sum += v;
+    int count = 0;
+
+    for (final row in matrix) {
+      for (final value in row) {
+        sum += value;
+        count++;
+      }
     }
-    final mean = sum / data.length;
+
+    if (count == 0) {
+      return;
+    }
+
+    final double mean = sum / count;
 
     double variance = 0.0;
-    for (final v in data) {
-      variance += (v - mean) * (v - mean);
-    }
-    final std = sqrt(variance / data.length) + 1e-6;
 
-    final out = Float32List(data.length);
-    for (int i = 0; i < data.length; i++) {
-      out[i] = (data[i] - mean) / std;
+    for (final row in matrix) {
+      for (final value in row) {
+        final double difference = value - mean;
+
+        variance += difference * difference;
+      }
     }
-    return out;
+
+    final double std = sqrt(variance / count);
+
+    final double denominator = std + 1e-6;
+
+    for (int rowIndex = 0; rowIndex < matrix.length; rowIndex++) {
+      for (
+        int columnIndex = 0;
+        columnIndex < matrix[rowIndex].length;
+        columnIndex++
+      ) {
+        matrix[rowIndex][columnIndex] =
+            ((matrix[rowIndex][columnIndex] - mean) / denominator);
+      }
+    }
   }
+
+  // ============================================================
+  // HANN WINDOW
+  // ============================================================
+
+  List<double> _buildHannWindow() {
+    final List<double> window = List<double>.filled(fftSize, 0.0);
+
+    for (int i = 0; i < fftSize; i++) {
+      window[i] = 0.5 * (1.0 - cos(2.0 * pi * i / fftSize));
+    }
+
+    return window;
+  }
+
+  // ============================================================
+  // MEL FILTERBANK
+  // ============================================================
+
+  List<List<double>> _buildMelFilterbank(int numberOfMelFilters) {
+    final int numberOfFftBins = fftSize ~/ 2 + 1;
+
+    const double minFrequency = 0.0;
+
+    const double maxFrequency = sampleRate / 2.0;
+
+    final double minMel = _hzToMel(minFrequency);
+
+    final double maxMel = _hzToMel(maxFrequency);
+
+    final List<double> melPoints = List<double>.generate(
+      numberOfMelFilters + 2,
+      (index) {
+        return minMel + (maxMel - minMel) * index / (numberOfMelFilters + 1);
+      },
+    );
+
+    final List<double> frequencies = melPoints.map(_melToHz).toList();
+
+    final List<int> bins = frequencies.map((frequency) {
+      int bin = ((fftSize + 1) * frequency / sampleRate).floor();
+
+      if (bin < 0) {
+        bin = 0;
+      }
+
+      if (bin >= numberOfFftBins) {
+        bin = numberOfFftBins - 1;
+      }
+
+      return bin;
+    }).toList();
+
+    final List<List<double>> filterbank = List.generate(
+      numberOfMelFilters,
+      (_) => List<double>.filled(numberOfFftBins, 0.0),
+    );
+
+    for (int m = 0; m < numberOfMelFilters; m++) {
+      final int left = bins[m];
+
+      final int center = bins[m + 1];
+
+      final int right = bins[m + 2];
+
+      // ----------------------------------------------------------
+      // Rising slope
+      // ----------------------------------------------------------
+
+      if (center > left) {
+        for (int k = left; k < center && k < numberOfFftBins; k++) {
+          filterbank[m][k] = (k - left) / (center - left);
+        }
+      }
+
+      // ----------------------------------------------------------
+      // Falling slope
+      // ----------------------------------------------------------
+
+      if (right > center) {
+        for (int k = center; k < right && k < numberOfFftBins; k++) {
+          filterbank[m][k] = (right - k) / (right - center);
+        }
+      }
+
+      // ----------------------------------------------------------
+      // Slaney-style area normalization
+      // ----------------------------------------------------------
+
+      final double bandwidth = frequencies[m + 2] - frequencies[m];
+
+      if (bandwidth > 0) {
+        final double scale = 2.0 / bandwidth;
+
+        for (int k = 0; k < numberOfFftBins; k++) {
+          filterbank[m][k] *= scale;
+        }
+      }
+    }
+
+    return filterbank;
+  }
+
+  // ============================================================
+  // DCT MATRIX
+  // ============================================================
+
+  List<List<double>> _buildDctMatrix(int outputSize, int inputSize) {
+    final List<List<double>> matrix = List.generate(
+      outputSize,
+      (_) => List<double>.filled(inputSize, 0.0),
+    );
+
+    final double scale = sqrt(2.0 / inputSize);
+
+    for (int k = 0; k < outputSize; k++) {
+      for (int n = 0; n < inputSize; n++) {
+        double value = cos(pi / inputSize * (n + 0.5) * k);
+
+        if (k == 0) {
+          value *= 1.0 / sqrt(2.0);
+        }
+
+        matrix[k][n] = value * scale;
+      }
+    }
+
+    return matrix;
+  }
+
+  // ============================================================
+  // FFT
+  // ============================================================
+
+  void _fft(Float64List real, Float64List imag) {
+    final int n = real.length;
+
+    // ------------------------------------------------------------
+    // Bit reversal
+    // ------------------------------------------------------------
+
+    int j = 0;
+
+    for (int i = 1; i < n; i++) {
+      int bit = n >> 1;
+
+      while ((j & bit) != 0) {
+        j ^= bit;
+        bit >>= 1;
+      }
+
+      j ^= bit;
+
+      if (i < j) {
+        final double tempReal = real[i];
+
+        real[i] = real[j];
+
+        real[j] = tempReal;
+
+        final double tempImag = imag[i];
+
+        imag[i] = imag[j];
+
+        imag[j] = tempImag;
+      }
+    }
+
+    // ------------------------------------------------------------
+    // FFT butterfly stages
+    // ------------------------------------------------------------
+
+    for (int length = 2; length <= n; length <<= 1) {
+      final double angle = -2.0 * pi / length;
+
+      final double wLenReal = cos(angle);
+
+      final double wLenImag = sin(angle);
+
+      for (int i = 0; i < n; i += length) {
+        double currentReal = 1.0;
+
+        double currentImag = 0.0;
+
+        final int half = length >> 1;
+
+        for (int k = 0; k < half; k++) {
+          final int evenIndex = i + k;
+
+          final int oddIndex = i + k + half;
+
+          final double oddReal =
+              real[oddIndex] * currentReal - imag[oddIndex] * currentImag;
+
+          final double oddImag =
+              real[oddIndex] * currentImag + imag[oddIndex] * currentReal;
+
+          final double evenReal = real[evenIndex];
+
+          final double evenImag = imag[evenIndex];
+
+          real[evenIndex] = evenReal + oddReal;
+
+          imag[evenIndex] = evenImag + oddImag;
+
+          real[oddIndex] = evenReal - oddReal;
+
+          imag[oddIndex] = evenImag - oddImag;
+
+          final double nextReal =
+              currentReal * wLenReal - currentImag * wLenImag;
+
+          currentImag = currentReal * wLenImag + currentImag * wLenReal;
+
+          currentReal = nextReal;
+        }
+      }
+    }
+  }
+
+  // ============================================================
+  // CENTER PADDING
+  // ============================================================
+
+  List<double> _centerPad(List<double> samples) {
+    final int padding = fftSize ~/ 2;
+
+    final List<double> result = List<double>.filled(
+      samples.length + padding * 2,
+      0.0,
+    );
+
+    for (int i = 0; i < samples.length; i++) {
+      result[i + padding] = samples[i];
+    }
+
+    return result;
+  }
+
+  // ============================================================
+  // RESAMPLING
+  // ============================================================
+
+  List<double> _resampleLinear(
+    List<double> input,
+    int inputRate,
+    int outputRate,
+  ) {
+    if (inputRate == outputRate) {
+      return List<double>.from(input);
+    }
+
+    if (input.isEmpty) {
+      return <double>[];
+    }
+
+    final int outputLength = (input.length * outputRate / inputRate).round();
+
+    final List<double> output = List<double>.filled(outputLength, 0.0);
+
+    final double ratio = inputRate / outputRate;
+
+    for (int i = 0; i < outputLength; i++) {
+      final double sourcePosition = i * ratio;
+
+      final int index = sourcePosition.floor();
+
+      final double fraction = sourcePosition - index;
+
+      if (index >= input.length - 1) {
+        output[i] = input.last;
+      } else {
+        output[i] =
+            input[index] * (1.0 - fraction) + input[index + 1] * fraction;
+      }
+    }
+
+    return output;
+  }
+
+  // ============================================================
+  // WAV READER
+  // ============================================================
+
+  Future<_WavData> _readWav(String path) async {
+    final File file = File(path);
+
+    final Uint8List bytes = await file.readAsBytes();
+
+    if (bytes.length < 44) {
+      throw Exception('Invalid WAV file: file is too small.');
+    }
+
+    final ByteData data = ByteData.sublistView(bytes);
+
+    final String riff = String.fromCharCodes(bytes.sublist(0, 4));
+
+    final String wave = String.fromCharCodes(bytes.sublist(8, 12));
+
+    if (riff != 'RIFF' || wave != 'WAVE') {
+      throw Exception('Invalid WAV file.');
+    }
+
+    int offset = 12;
+
+    int? audioFormat;
+    int? channels;
+    int? sampleRateValue;
+    int? bitsPerSample;
+
+    int? dataOffset;
+    int? dataSize;
+
+    while (offset + 8 <= bytes.length) {
+      final String chunkId = String.fromCharCodes(
+        bytes.sublist(offset, offset + 4),
+      );
+
+      final int chunkSize = data.getUint32(offset + 4, Endian.little);
+
+      final int chunkDataStart = offset + 8;
+
+      if (chunkId == 'fmt ') {
+        if (chunkDataStart + 16 > bytes.length) {
+          throw Exception('Invalid WAV fmt chunk.');
+        }
+
+        audioFormat = data.getUint16(chunkDataStart, Endian.little);
+
+        channels = data.getUint16(chunkDataStart + 2, Endian.little);
+
+        sampleRateValue = data.getUint32(chunkDataStart + 4, Endian.little);
+
+        bitsPerSample = data.getUint16(chunkDataStart + 14, Endian.little);
+      } else if (chunkId == 'data') {
+        dataOffset = chunkDataStart;
+
+        dataSize = min(chunkSize, bytes.length - chunkDataStart);
+      }
+
+      offset = chunkDataStart + chunkSize;
+
+      // WAV chunks are word aligned.
+      if (offset % 2 != 0) {
+        offset++;
+      }
+
+      if (dataOffset != null && audioFormat != null) {
+        break;
+      }
+    }
+
+    if (audioFormat == null ||
+        channels == null ||
+        sampleRateValue == null ||
+        bitsPerSample == null ||
+        dataOffset == null ||
+        dataSize == null) {
+      throw Exception('Could not read WAV format information.');
+    }
+
+    if (audioFormat != 1) {
+      throw Exception('Unsupported WAV format. Only PCM WAV is supported.');
+    }
+
+    if (bitsPerSample != 16) {
+      throw Exception(
+        'Unsupported WAV bit depth. Only 16-bit PCM is supported.',
+      );
+    }
+
+    if (channels != 1 && channels != 2) {
+      throw Exception('Unsupported number of WAV channels.');
+    }
+
+    final int bytesPerSample = bitsPerSample ~/ 8;
+
+    final int totalSamples = dataSize ~/ (bytesPerSample * channels);
+
+    final List<double> samples = List<double>.filled(totalSamples, 0.0);
+
+    int byteIndex = dataOffset;
+
+    for (int i = 0; i < totalSamples; i++) {
+      double sample = 0.0;
+
+      for (int channel = 0; channel < channels; channel++) {
+        if (byteIndex + 2 > bytes.length) {
+          break;
+        }
+
+        final int pcm = data.getInt16(byteIndex, Endian.little);
+
+        byteIndex += 2;
+
+        sample += pcm / 32768.0;
+      }
+
+      sample /= channels;
+
+      samples[i] = sample;
+    }
+
+    return _WavData(samples: samples, sampleRate: sampleRateValue);
+  }
+
+  // ============================================================
+  // MEL CONVERSION
+  // ============================================================
+
+  double _hzToMel(double hz) {
+    return 2595.0 * log(1.0 + hz / 700.0) / ln10;
+  }
+
+  double _melToHz(double mel) {
+    return 700.0 * (pow(10.0, mel / 2595.0) - 1.0);
+  }
+}
+
+// ================================================================
+// WAV DATA HOLDER
+// ================================================================
+
+class _WavData {
+  final List<double> samples;
+  final int sampleRate;
+
+  _WavData({required this.samples, required this.sampleRate});
 }

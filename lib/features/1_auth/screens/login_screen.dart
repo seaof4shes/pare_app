@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 import 'package:pare_app/core/database/user_service.dart';
-
 import 'package:pare_app/features/main_nav_screen.dart';
+
 import 'signup_screen.dart';
+import 'otp_screen.dart';
 import 'package:pare_app/features/1_auth/screens/forgot_mpin_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -44,7 +46,9 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _onLogin() async {
     setState(() => _autoValidate = true);
 
-    if (!_formKey.currentState!.validate()) return;
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
 
     final rawPhone = _phoneController.text.trim();
     final pin = _pinController.text.trim();
@@ -61,52 +65,308 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isSendingOtp = true);
 
     try {
-      final accountExists = await UserService().phoneExists(phone);
+      final userService = UserService();
+      final prefs = await SharedPreferences.getInstance();
 
-      if (!accountExists) {
-        final restored = await UserService().restoreUserFromFirestore(
+      // ==========================================================
+      // 1. CHECK LOCAL ACCOUNT
+      // ==========================================================
+
+      final localAccountExists = await userService.phoneExists(phone);
+
+      // ==========================================================
+      // 2. FRESH INSTALL / LOCAL ACCOUNT MISSING
+      // ==========================================================
+      //
+      // IMPORTANT:
+      // Do NOT query Firestore here.
+      //
+      // Firestore requires request.auth != null, but the user has
+      // not completed Firebase Phone Authentication yet.
+      //
+      // Instead, Firebase OTP will authenticate the phone first.
+      //
+      // After successful OTP verification, OtpScreen will restore
+      // the account from Firestore using the authenticated Firebase UID.
+      //
+      // ==========================================================
+
+      if (!localAccountExists) {
+        await prefs.setString('pending_login_phone', phone);
+        await prefs.setBool('isLoggedIn', false);
+
+        await FirebaseAuth.instance.verifyPhoneNumber(
           phoneNumber: phone,
-          mpin: pin,
+
+          // --------------------------------------------------------
+          // AUTOMATIC VERIFICATION
+          // --------------------------------------------------------
+          verificationCompleted: (PhoneAuthCredential credential) async {
+            try {
+              await FirebaseAuth.instance.signInWithCredential(credential);
+
+              // Firebase authentication is now complete.
+              //
+              // Restore the local account from Firestore using the
+              // authenticated Firebase UID.
+              final restored = await userService
+                  .restoreCurrentUserFromFirestore(mpin: pin);
+
+              if (!restored) {
+                throw Exception(
+                  "Unable to restore the P.A.R.E. account from Firebase.",
+                );
+              }
+
+              final localUser = await userService.getUserByPhone(phone);
+
+              await prefs.setString('phone', phone);
+
+              await prefs.setString(
+                'username',
+                localUser?['username']?.toString() ?? 'User',
+              );
+
+              await prefs.setBool('requireOtp', false);
+              await prefs.setBool('isLoggedIn', true);
+
+              if (!mounted) return;
+
+              setState(() => _isSendingOtp = false);
+
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (_) => const MainNavScreen()),
+              );
+            } catch (e) {
+              if (!mounted) return;
+
+              setState(() => _isSendingOtp = false);
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text("Account restoration failed: $e")),
+              );
+            }
+          },
+
+          // --------------------------------------------------------
+          // VERIFICATION FAILED
+          // --------------------------------------------------------
+          verificationFailed: (FirebaseAuthException e) {
+            if (!mounted) return;
+
+            setState(() => _isSendingOtp = false);
+
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text("Unable to send OTP: ${e.message ?? e.code}"),
+              ),
+            );
+          },
+
+          // --------------------------------------------------------
+          // OTP SENT
+          // --------------------------------------------------------
+          codeSent: (String verificationId, int? resendToken) {
+            if (!mounted) return;
+
+            setState(() => _isSendingOtp = false);
+
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => OtpScreen(
+                  phone: phone,
+                  verificationId: verificationId,
+
+                  // Login, not signup.
+                  isSignUp: false,
+                  isLogin: true,
+
+                  // Needed so OtpScreen can establish the MPIN
+                  // locally after Firebase authentication.
+                  pin: pin,
+                ),
+              ),
+            );
+          },
+
+          // --------------------------------------------------------
+          // AUTO RETRIEVAL TIMEOUT
+          // --------------------------------------------------------
+          codeAutoRetrievalTimeout: (String verificationId) {
+            // OtpScreen handles manual OTP entry.
+          },
         );
 
-        if (!restored) {
-          if (!mounted) return;
-          setState(() => _isSendingOtp = false);
-
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("No account found or incorrect PIN.")),
-          );
-          return;
-        }
+        return;
       }
 
-      final success = await UserService().loginUser(
+      // ==========================================================
+      // 3. LOCAL ACCOUNT EXISTS
+      // ==========================================================
+      //
+      // Existing-device login continues using the local MPIN.
+      //
+      // ==========================================================
+
+      final success = await userService.loginUser(
         usernameOrPhone: phone,
         mpin: pin,
       );
 
       if (!success) {
+        final isLocked = await userService.isMpinLocked(phone);
+
         if (!mounted) return;
+
         setState(() => _isSendingOtp = false);
 
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("Incorrect PIN")));
+        if (isLocked) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                "Too many incorrect PIN attempts. Please try again later.",
+              ),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text("Incorrect PIN")));
+        }
+
         return;
       }
 
-      final user = await UserService().getUserByPhone(phone);
+      // ==========================================================
+      // 4. CHECK WHETHER OTP IS REQUIRED
+      // ==========================================================
 
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('phone', phone);
-      await prefs.setString('username', user?['username'] ?? 'User');
-      await prefs.setBool('isLoggedIn', true);
+      final requireOtp = prefs.getBool('requireOtp') ?? false;
 
-      if (!mounted) return;
+      // ==========================================================
+      // 5. NORMAL LOGIN
+      // ==========================================================
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const MainNavScreen()),
+      if (!requireOtp) {
+        final user = await userService.getUserByPhone(phone);
+
+        if (!mounted) return;
+
+        await prefs.setString('phone', phone);
+
+        await prefs.setString(
+          'username',
+          user?['username']?.toString() ?? 'User',
+        );
+
+        await prefs.setBool('isLoggedIn', true);
+
+        if (!mounted) return;
+
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const MainNavScreen()),
+        );
+
+        return;
+      }
+
+      // ==========================================================
+      // 6. EXISTING DEVICE LOGIN → REQUIRE OTP
+      // ==========================================================
+
+      await prefs.setString('pending_login_phone', phone);
+      await prefs.setBool('isLoggedIn', false);
+
+      // ==========================================================
+      // 7. SEND FIREBASE OTP
+      // ==========================================================
+
+      await FirebaseAuth.instance.verifyPhoneNumber(
+        phoneNumber: phone,
+
+        // --------------------------------------------------------
+        // AUTOMATIC VERIFICATION
+        // --------------------------------------------------------
+        verificationCompleted: (PhoneAuthCredential credential) async {
+          try {
+            await FirebaseAuth.instance.signInWithCredential(credential);
+
+            final user = await userService.getUserByPhone(phone);
+
+            await prefs.setBool('requireOtp', false);
+            await prefs.setBool('isLoggedIn', true);
+            await prefs.setString('phone', phone);
+
+            await prefs.setString(
+              'username',
+              user?['username']?.toString() ?? 'User',
+            );
+
+            if (!mounted) return;
+
+            setState(() => _isSendingOtp = false);
+
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (_) => const MainNavScreen()),
+            );
+          } catch (e) {
+            if (!mounted) return;
+
+            setState(() => _isSendingOtp = false);
+
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text("Automatic verification failed: $e")),
+            );
+          }
+        },
+
+        // --------------------------------------------------------
+        // VERIFICATION FAILED
+        // --------------------------------------------------------
+        verificationFailed: (FirebaseAuthException e) {
+          if (!mounted) return;
+
+          setState(() => _isSendingOtp = false);
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("Unable to send OTP: ${e.message ?? e.code}"),
+            ),
+          );
+        },
+
+        // --------------------------------------------------------
+        // OTP SENT
+        // --------------------------------------------------------
+        codeSent: (String verificationId, int? resendToken) {
+          if (!mounted) return;
+
+          setState(() => _isSendingOtp = false);
+
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => OtpScreen(
+                phone: phone,
+                verificationId: verificationId,
+                isSignUp: false,
+                isLogin: true,
+                pin: pin,
+              ),
+            ),
+          );
+        },
+
+        // --------------------------------------------------------
+        // AUTO RETRIEVAL TIMEOUT
+        // --------------------------------------------------------
+        codeAutoRetrievalTimeout: (String verificationId) {
+          // OtpScreen handles the OTP entry.
+        },
       );
     } catch (e) {
       if (!mounted) return;
@@ -115,7 +375,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text("Error: $e")));
+      ).showSnackBar(SnackBar(content: Text("Login error: $e")));
     }
   }
 
@@ -180,7 +440,9 @@ class _LoginScreenState extends State<LoginScreen> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      // Logo Row
+                      // ==================================================
+                      // LOGO
+                      // ==================================================
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         crossAxisAlignment: CrossAxisAlignment.center,
@@ -226,7 +488,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
                       const SizedBox(height: 32),
 
-                      // Card
+                      // ==================================================
+                      // LOGIN CARD
+                      // ==================================================
                       Container(
                         width: double.infinity,
                         padding: const EdgeInsets.symmetric(
@@ -266,7 +530,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
                               const SizedBox(height: 24),
 
-                              // Phone field
+                              // ==================================================
+                              // PHONE NUMBER
+                              // ==================================================
                               TextFormField(
                                 controller: _phoneController,
                                 keyboardType: TextInputType.number,
@@ -286,19 +552,24 @@ class _LoginScreenState extends State<LoginScreen> {
                                   if (v == null || v.isEmpty) {
                                     return "Phone number is required";
                                   }
+
                                   if (v.length != 11) {
                                     return "Please enter an 11-digit number";
                                   }
+
                                   if (!v.startsWith('09')) {
                                     return "Must start with 09";
                                   }
+
                                   return null;
                                 },
                               ),
 
                               const SizedBox(height: 14),
 
-                              // PIN field
+                              // ==================================================
+                              // MPIN
+                              // ==================================================
                               TextFormField(
                                 controller: _pinController,
                                 keyboardType: TextInputType.number,
@@ -315,9 +586,11 @@ class _LoginScreenState extends State<LoginScreen> {
                                   hint: "6-digit PIN",
                                   suffixIcon: Icons.lock_outline,
                                   suffixWidget: GestureDetector(
-                                    onTap: () => setState(
-                                      () => _obscurePin = !_obscurePin,
-                                    ),
+                                    onTap: () {
+                                      setState(() {
+                                        _obscurePin = !_obscurePin;
+                                      });
+                                    },
                                     child: Icon(
                                       _obscurePin
                                           ? Icons.lock_outline
@@ -331,9 +604,11 @@ class _LoginScreenState extends State<LoginScreen> {
                                   if (v == null || v.isEmpty) {
                                     return "PIN is required";
                                   }
+
                                   if (v.length != 6) {
                                     return "PIN must be exactly 6 digits";
                                   }
+
                                   return null;
                                 },
                               ),
@@ -344,7 +619,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
                       const SizedBox(height: 24),
 
-                      // Login button
+                      // ==================================================
+                      // LOGIN BUTTON
+                      // ==================================================
                       SizedBox(
                         width: double.infinity,
                         height: 54,
@@ -382,7 +659,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
                       const SizedBox(height: 14),
 
-                      // Forgot Password
+                      // ==================================================
+                      // FORGOT MPIN
+                      // ==================================================
                       GestureDetector(
                         onTap: () {
                           Navigator.push(
@@ -409,7 +688,9 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
             ),
 
-            // Sign-up footer
+            // ==================================================
+            // SIGN-UP FOOTER
+            // ==================================================
             Padding(
               padding: const EdgeInsets.only(bottom: 28),
               child: Row(

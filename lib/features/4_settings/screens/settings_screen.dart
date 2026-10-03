@@ -11,9 +11,18 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  // ---------------------------------------------------------------------
+  // Design tokens — mirrored from HomeScreen / HistoryScreen so all three
+  // screens read as one cohesive design system.
+  // ---------------------------------------------------------------------
   static const Color primaryBlue = Color(0xFF092C56);
-  static const Color cardColor = Color(0xFFEFF4F3);
-  static const Color backgroundColor = Color(0xFFF7F8FA);
+  static const Color accentBlue = Color(0xFF2A5298);
+  static const Color backgroundColor = Color(0xFFF6F8FB);
+  static const Color surfaceColor = Color(0xFFFFFFFF);
+  static const Color borderColor = Color(0xFFE4E9F0);
+  static const Color inkColor = Color(0xFF10192B);
+  static const Color mutedColor = Color(0xFF6B7686);
+  static const Color dangerColor = Color(0xFFC0392B);
 
   static const String keyCallDetection = 'call_detection';
   static const String keyMsgDetection = 'msg_detection';
@@ -32,6 +41,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   bool _isLoading = true;
 
+  String _username = "Username";
+
   @override
   void initState() {
     super.initState();
@@ -44,6 +55,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
 
     setState(() {
+      _username = prefs.getString('username') ?? "Username";
+
       protectCalls = prefs.getBool(keyCallDetection) ?? true;
       protectSMS = prefs.getBool(keyMsgDetection) ?? true;
       blockCalls = prefs.getBool(keyCallAutoBlock) ?? true;
@@ -63,10 +76,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _logout() async {
     final prefs = await SharedPreferences.getInstance();
+
+    // Clear the active session
     await prefs.remove('phone');
     await prefs.remove('username');
+
+    // Require OTP on the next login
+    await prefs.setBool('requireOtp', true);
+    await prefs.setBool('isLoggedIn', false);
+
+    // Turn off active protection
     await prefs.setBool('protection_activated', false);
+
     if (!mounted) return;
+
     Navigator.pushAndRemoveUntil(
       context,
       MaterialPageRoute(builder: (_) => const LoginScreen()),
@@ -78,41 +101,91 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await AppSettings.openAppSettings();
   }
 
+  // ─── Shared UI pieces (mirrored from HomeScreen / HistoryScreen) ──────────────
+
   Widget _header() {
+    final initial = _username.isNotEmpty ? _username[0].toUpperCase() : "U";
+
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: const [
-            Text(
-              "P.A.R.E",
-              style: TextStyle(
+        Row(
+          children: [
+            Container(
+              width: 42,
+              height: 42,
+              alignment: Alignment.center,
+              decoration: const BoxDecoration(
                 color: primaryBlue,
-                fontSize: 30,
-                fontWeight: FontWeight.w900,
+                shape: BoxShape.circle,
+              ),
+              child: Text(
+                initial,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ),
-            Text(
-              "Phishing & Response Engine",
-              style: TextStyle(
-                color: Colors.black45,
-                fontSize: 11,
-                fontWeight: FontWeight.w500,
-              ),
+            const SizedBox(width: 12),
+            const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  "P.A.R.E",
+                  style: TextStyle(
+                    color: primaryBlue,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                Text(
+                  "Protecting All Random Exchange",
+                  style: TextStyle(
+                    color: mutedColor,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
             ),
           ],
         ),
-        Container(
-          width: 44,
-          height: 44,
-          decoration: const BoxDecoration(
-            color: Color.fromRGBO(9, 44, 86, 0.10),
-            shape: BoxShape.circle,
-          ),
-          child: const Icon(Icons.security, color: primaryBlue, size: 26),
+        SizedBox(
+          width: 40,
+          height: 40,
+          child: Image.asset('assets/icon/app_icon.png', fit: BoxFit.contain),
         ),
       ],
+    );
+  }
+
+  Widget _card({required Widget child, EdgeInsets? padding}) {
+    return Container(
+      width: double.infinity,
+      padding: padding ?? const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: surfaceColor,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: borderColor),
+      ),
+      child: child,
+    );
+  }
+
+  Widget _iconBadge(IconData icon, {Color? tint}) {
+    final color = tint ?? primaryBlue;
+    return Container(
+      width: 34,
+      height: 34,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Icon(icon, size: 17, color: color),
     );
   }
 
@@ -124,19 +197,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
         Text(
           title,
           style: const TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w900,
-            color: primaryBlue,
+            fontSize: 15,
+            fontWeight: FontWeight.w800,
+            color: inkColor,
           ),
         ),
         const SizedBox(height: 10),
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(18),
-          decoration: BoxDecoration(
-            color: cardColor,
-            borderRadius: BorderRadius.circular(14),
-          ),
+        _card(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: children,
@@ -152,13 +219,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required String subtitle,
     required bool value,
     required Function(bool) onChanged,
+    bool isLast = false,
   }) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
+      padding: EdgeInsets.only(bottom: isLast ? 0 : 14),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Icon(icon, color: primaryBlue, size: 22),
+          _iconBadge(icon, tint: value ? accentBlue : mutedColor),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
@@ -169,7 +237,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   style: const TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w800,
-                    color: Colors.black87,
+                    color: inkColor,
                   ),
                 ),
                 const SizedBox(height: 3),
@@ -178,7 +246,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   style: const TextStyle(
                     fontSize: 12.5,
                     fontWeight: FontWeight.w500,
-                    color: Colors.black54,
+                    color: mutedColor,
                   ),
                 ),
               ],
@@ -189,7 +257,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             activeThumbColor: primaryBlue,
             activeTrackColor: primaryBlue.withValues(alpha: 0.35),
             inactiveThumbColor: Colors.grey.shade500,
-            inactiveTrackColor: Colors.grey.shade300,
+            inactiveTrackColor: borderColor,
             onChanged: onChanged,
           ),
         ],
@@ -199,18 +267,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _permissionRow({required IconData icon, required String text}) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.only(bottom: 12),
       child: Row(
         children: [
-          Icon(icon, color: primaryBlue, size: 21),
+          _iconBadge(icon, tint: accentBlue),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               text,
               style: const TextStyle(
-                fontSize: 15,
+                fontSize: 14,
                 fontWeight: FontWeight.w600,
-                color: Colors.black87,
+                color: inkColor,
               ),
             ),
           ),
@@ -228,7 +296,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           Text(
             "$label: ",
             style: const TextStyle(
-              fontSize: 15,
+              fontSize: 14,
               fontWeight: FontWeight.w800,
               color: primaryBlue,
             ),
@@ -237,9 +305,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: Text(
               value,
               style: const TextStyle(
-                fontSize: 15,
+                fontSize: 14,
                 fontWeight: FontWeight.w600,
-                color: Colors.black87,
+                color: inkColor,
               ),
             ),
           ),
@@ -254,7 +322,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       height: 48,
       child: OutlinedButton.icon(
         onPressed: _openAppSettings,
-        icon: const Icon(Icons.settings, color: primaryBlue),
+        icon: const Icon(Icons.settings, color: primaryBlue, size: 18),
         label: const Text(
           "Manage Permissions",
           style: TextStyle(fontWeight: FontWeight.w800, color: primaryBlue),
@@ -272,22 +340,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget _logoutButton() {
     return SizedBox(
       width: double.infinity,
-      height: 55,
-      child: ElevatedButton.icon(
+      height: 56,
+      child: OutlinedButton.icon(
         onPressed: _logout,
-        icon: const Icon(Icons.logout, color: Colors.white),
+        icon: const Icon(Icons.logout, color: dangerColor, size: 18),
         label: const Text(
           "Logout",
           style: TextStyle(
-            fontSize: 16,
+            fontSize: 15,
             fontWeight: FontWeight.w800,
-            color: Colors.white,
+            color: dangerColor,
           ),
         ),
-        style: ElevatedButton.styleFrom(
-          backgroundColor: Colors.red.shade500,
-          elevation: 3,
-          shadowColor: Colors.red.withValues(alpha: 0.3),
+        style: OutlinedButton.styleFrom(
+          side: const BorderSide(color: dangerColor, width: 1.4),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(14),
           ),
@@ -302,13 +368,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       backgroundColor: backgroundColor,
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 18, 14, 0),
+          padding: const EdgeInsets.fromLTRB(16, 18, 16, 0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _header(),
 
-              const SizedBox(height: 16),
+              const SizedBox(height: 18),
 
               Expanded(
                 child: _isLoading
@@ -343,9 +409,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               ),
                               _switchTile(
                                 icon: Icons.call_end_outlined,
-                                title: "Auto Block Calls",
+                                title: "Assisted Call Blocking",
                                 subtitle:
-                                    "Automatically block detected scam calls",
+                                    "Prompt you to block a caller once a scam "
+                                    "call is detected",
                                 value: blockCalls,
                                 onChanged: (v) {
                                   setState(() => blockCalls = v);
@@ -362,6 +429,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   setState(() => blockSMS = v);
                                   _saveBool(keyMsgScamAlerts, v);
                                 },
+                                isLast: true,
                               ),
                             ]),
                             _section("Notifications", [
@@ -386,15 +454,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   setState(() => notifVibrate = v);
                                   _saveBool(keyNotifVibrate, v);
                                 },
+                                isLast: true,
                               ),
                             ]),
                             _section("Privacy & Permissions", [
                               const Text(
                                 "Allow this app to:",
                                 style: TextStyle(
-                                  fontSize: 15,
+                                  fontSize: 14,
                                   fontWeight: FontWeight.w800,
-                                  color: Colors.black87,
+                                  color: inkColor,
                                 ),
                               ),
                               const SizedBox(height: 14),
@@ -410,7 +479,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 icon: Icons.mic,
                                 text: "Capture short voice samples",
                               ),
-                              const SizedBox(height: 8),
+                              _permissionRow(
+                                icon: Icons.upload_file_outlined,
+                                text: "Access files for voice upload",
+                              ),
+                              const SizedBox(height: 4),
                               _managePermissionsButton(),
                             ]),
                             _section("About", [

@@ -11,7 +11,9 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // Initialize Firebase.
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
 
   // Initialize local notifications BEFORE runApp().
   await NotificationService.init();
@@ -21,20 +23,28 @@ Future<void> main() async {
 
   final phone = prefs.getString('phone');
 
-  runApp(PAREApp(isLoggedIn: phone != null));
+  runApp(
+    PAREApp(
+      isLoggedIn: phone != null,
+    ),
+  );
 }
 
 class PAREApp extends StatelessWidget {
   final bool isLoggedIn;
 
-  const PAREApp({super.key, required this.isLoggedIn});
+  const PAREApp({
+    super.key,
+    required this.isLoggedIn,
+  });
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-
-      home: isLoggedIn ? const MainNavScreen() : const LoginScreen(),
+      home: isLoggedIn
+          ? const MainNavScreen()
+          : const LoginScreen(),
     );
   }
 }

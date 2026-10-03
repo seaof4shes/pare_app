@@ -198,6 +198,43 @@ class CallDetectionService {
     }
   }
 
+  /// NEW: analyze a WAV file the user picked from storage (instead of
+  /// recording live audio) for human vs AI-generated voice.
+  Future<Map<String, dynamic>?> analyzeAudioFile(
+    String filePath, {
+    String? fileName,
+  }) async {
+    if (_isDetecting) return null;
+
+    _isDetecting = true;
+
+    try {
+      final resolvedName = fileName ?? filePath.split('/').last;
+
+      debugPrint('📁 Starting uploaded audio analysis: $resolvedName');
+
+      final result = await _callAnalysisService.analyzeUploadedFile(
+        filePath,
+        fileName: resolvedName,
+      );
+
+      if (result == null) {
+        debugPrint('❌ Uploaded audio analysis returned no result');
+        return null;
+      }
+
+      debugPrint('📁 Upload Analysis Result: ${result['label']}');
+      debugPrint('Confidence: ${result['confidence']}');
+
+      return result;
+    } catch (e) {
+      debugPrint('❌ Uploaded audio analysis error: $e');
+      return null;
+    } finally {
+      _isDetecting = false;
+    }
+  }
+
   void dispose() {
     _callAnalysisService.dispose();
   }
