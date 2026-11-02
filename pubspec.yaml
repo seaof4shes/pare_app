@@ -2,7 +2,7 @@ name: pare_app
 description: "A new Flutter project."
 publish_to: 'none'
 
-version: 1.0.13+2014
+version: 1.0.1+2026
 
 environment:
   sdk: ^3.11.5

@@ -20,7 +20,11 @@ class ForgotMpinScreen extends StatefulWidget {
 class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
   final _formKey = GlobalKey<FormState>();
   final _phoneController = TextEditingController();
-  final _otpController = TextEditingController();
+  final List<TextEditingController> _otpControllers = List.generate(
+    6,
+    (_) => TextEditingController(),
+  );
+  final List<FocusNode> _otpFocusNodes = List.generate(6, (_) => FocusNode());
   final _newMpinController = TextEditingController();
   final _confirmMpinController = TextEditingController();
 
@@ -49,6 +53,8 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
   static const Color dangerColor = Color(0xFFC0392B);
   static const Color trackColor = Color(0xFFD5DCE6);
 
+  String get _otp => _otpControllers.map((c) => c.text).join();
+
   /// 0 = send OTP, 1 = verify OTP, 2 = reset MPIN
   int get _step => !_otpSent
       ? 0
@@ -60,7 +66,12 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
   void dispose() {
     _resendTimer?.cancel();
     _phoneController.dispose();
-    _otpController.dispose();
+    for (final c in _otpControllers) {
+      c.dispose();
+    }
+    for (final f in _otpFocusNodes) {
+      f.dispose();
+    }
     _newMpinController.dispose();
     _confirmMpinController.dispose();
     super.dispose();
@@ -96,6 +107,12 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
       ..showSnackBar(SnackBar(content: Text(message)));
   }
 
+  void _clearOtpFields() {
+    for (final c in _otpControllers) {
+      c.clear();
+    }
+  }
+
   void _startResendCooldown() {
     _resendTimer?.cancel();
     setState(() => _resendSeconds = 30);
@@ -129,7 +146,7 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
       _resendToken = null;
       _resendSeconds = 0;
       _autoValidate = false;
-      _otpController.clear();
+      _clearOtpFields();
       _newMpinController.clear();
       _confirmMpinController.clear();
     });
@@ -177,11 +194,15 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
             _otpSent = true;
             _loading = false;
             _autoValidate = false;
-            _otpController.clear();
+            _clearOtpFields();
           });
 
-          _startResendCooldown();
-          _snack("OTP sent");
+          // The cooldown only starts once the user has tapped "Resend OTP".
+          if (resend) {
+            _startResendCooldown();
+            _otpFocusNodes[0].requestFocus();
+          }
+          _snack(resend ? "OTP resent successfully" : "OTP sent");
         },
         codeAutoRetrievalTimeout: (verificationId) {
           _verificationId = verificationId;
@@ -197,8 +218,10 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
   Future<void> _verifyOtp() async {
     if (_loading) return;
 
-    setState(() => _autoValidate = true);
-    if (!_formKey.currentState!.validate()) return;
+    if (_otp.length != 6) {
+      _snack("Enter 6-digit OTP");
+      return;
+    }
 
     if (_verificationId == null) {
       _snack("Please request an OTP first");
@@ -210,7 +233,7 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
     try {
       final credential = PhoneAuthProvider.credential(
         verificationId: _verificationId!,
-        smsCode: _otpController.text.trim(),
+        smsCode: _otp,
       );
 
       await FirebaseAuth.instance.signInWithCredential(credential);
@@ -508,27 +531,91 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
     );
   }
 
-  Widget _otpField() {
-    return TextFormField(
-      controller: _otpController,
-      keyboardType: TextInputType.number,
-      maxLength: 6,
-      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-      style: const TextStyle(
-        color: inkColor,
-        fontSize: 15,
-        fontWeight: FontWeight.w500,
-        letterSpacing: 4,
+  /// Handles typing, deleting and pasting in box [i].
+  ///
+  /// More than one digit arriving at once (a paste, or typing over a filled
+  /// box) is spread across this box and the ones after it.
+  void _onOtpBoxChanged(int i, String value) {
+    if (value.isEmpty) {
+      if (i > 0) _otpFocusNodes[i - 1].requestFocus();
+      return;
+    }
+
+    final digits = value.replaceAll(RegExp(r'\D'), '');
+
+    if (digits.isEmpty) {
+      _otpControllers[i].clear();
+      return;
+    }
+
+    var last = i;
+
+    for (var j = 0; j < digits.length && i + j < 6; j++) {
+      last = i + j;
+      _otpControllers[last].value = TextEditingValue(
+        text: digits[j],
+        selection: const TextSelection.collapsed(offset: 1),
+      );
+    }
+
+    _otpFocusNodes[last < 5 ? last + 1 : 5].requestFocus();
+  }
+
+  Widget _otpBox(int i) {
+    OutlineInputBorder border(Color color, double width) => OutlineInputBorder(
+      borderRadius: BorderRadius.circular(14),
+      borderSide: BorderSide(color: color, width: width),
+    );
+
+    return SizedBox(
+      height: 54,
+      child: TextField(
+        controller: _otpControllers[i],
+        focusNode: _otpFocusNodes[i],
+        textAlign: TextAlign.center,
+        keyboardType: TextInputType.number,
+        autofillHints: i == 0 ? const [AutofillHints.oneTimeCode] : null,
+        inputFormatters: [
+          FilteringTextInputFormatter.digitsOnly,
+          LengthLimitingTextInputFormatter(6),
+        ],
+        cursorColor: primaryBlue,
+        style: const TextStyle(
+          color: inkColor,
+          fontSize: 20,
+          fontWeight: FontWeight.w700,
+        ),
+        decoration: InputDecoration(
+          counterText: '',
+          filled: true,
+          fillColor: Colors.white,
+          contentPadding: EdgeInsets.zero,
+          enabledBorder: border(Colors.transparent, 1),
+          focusedBorder: border(accentBlue, 1.4),
+        ),
+        onTap: () {
+          // Select the digit so typing replaces it.
+          final c = _otpControllers[i];
+          c.selection = TextSelection(
+            baseOffset: 0,
+            extentOffset: c.text.length,
+          );
+        },
+        onChanged: (value) => _onOtpBoxChanged(i, value),
       ),
-      decoration: _pillDecoration(
-        hint: '6-digit code',
-        prefix: const AuthFieldIcon(AuthIcons.code),
-      ),
-      validator: (v) {
-        if (v == null || v.isEmpty) return 'OTP is required';
-        if (v.length != 6) return 'OTP must be exactly 6 digits';
-        return null;
-      },
+    );
+  }
+
+  Widget _otpBoxes() {
+    return Row(
+      children: List.generate(6, (i) {
+        return Expanded(
+          child: Padding(
+            padding: EdgeInsets.only(left: i == 0 ? 0 : 6),
+            child: _otpBox(i),
+          ),
+        );
+      }),
     );
   }
 
@@ -627,20 +714,28 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
   Widget _resendRow() {
     final canResend = _resendSeconds <= 0 && !_loading;
 
-    return Align(
-      alignment: Alignment.centerRight,
-      child: GestureDetector(
-        onTap: canResend ? () => _sendOtp(resend: true) : null,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-          child: Text(
-            _resendSeconds > 0 ? 'Resend in ${_resendSeconds}s' : 'Resend code',
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: canResend ? accentBlue : mutedColor,
+    return Center(
+      child: Text.rich(
+        TextSpan(
+          style: const TextStyle(fontSize: 13, color: mutedColor),
+          children: [
+            const TextSpan(text: "Didn’t receive it? "),
+            WidgetSpan(
+              alignment: PlaceholderAlignment.baseline,
+              baseline: TextBaseline.alphabetic,
+              child: GestureDetector(
+                onTap: canResend ? () => _sendOtp(resend: true) : null,
+                child: Text(
+                  _resendSeconds > 0 ? '${_resendSeconds}s' : 'Resend OTP',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    color: canResend ? accentBlue : const Color(0xFF9AA4B2),
+                  ),
+                ),
+              ),
             ),
-          ),
+          ],
         ),
       ),
     );
@@ -666,10 +761,10 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
         return [
           _sheetTitle('Verification'),
           const SizedBox(height: 22),
-          _otpField(),
-          const SizedBox(height: 6),
+          _otpBoxes(),
+          const SizedBox(height: 18),
           _resendRow(),
-          const SizedBox(height: 14),
+          const SizedBox(height: 20),
           _primaryButton(),
           const SizedBox(height: 22),
           _linkText(
