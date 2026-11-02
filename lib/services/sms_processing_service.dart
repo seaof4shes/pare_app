@@ -70,6 +70,7 @@ class SmsProcessingService {
         message: message,
         payload: id.toString(),
         riskLevel: result.riskLevel,
+        detectionSummary: result.explanation.split('\n\n').first,
       );
       if (shown) {
         await DatabaseHelper.instance.updateHistoryAction(

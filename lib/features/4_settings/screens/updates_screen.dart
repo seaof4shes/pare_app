@@ -2,12 +2,8 @@ import 'package:flutter/services.dart';
 import '../../../services/app_update_service.dart';
 import 'package:flutter/material.dart';
 
-import '../../../core/ml/sms_detection_service.dart';
-import '../../../core/ml/voice_detection_service.dart';
 import 'package:pare_app/features/1_auth/screens/rings_painter.dart';
 import 'package:pare_app/features/widgets/pare_shell.dart';
-
-import 'dart:developer';
 
 class UpdatesScreen extends StatefulWidget {
   final bool appUpdateAvailable;
@@ -54,12 +50,10 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
 
   static const Color dangerColor = Color(0xFFC0392B);
 
-  bool _isUpdatingSmsModel = false;
-  bool _isUpdatingVoiceModel = false;
   bool get _hasUpdateInfo => widget.latestAppVersion.isNotEmpty;
 
   // ============================================================
-  // P.A.R.E. DIALOG HELPERS
+  // PARE DIALOG HELPERS
   // Same visual style used by HomeScreen
   // ============================================================
 
@@ -255,151 +249,7 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
   }
 
   // ============================================================
-  // SMS MODEL UPDATE
-  // ============================================================
-
-  Future<void> _updateSmsModel() async {
-    if (_isUpdatingSmsModel) return;
-
-    setState(() {
-      _isUpdatingSmsModel = true;
-    });
-
-    try {
-      final smsService = SmsDetectionService();
-
-      final result = await smsService.downloadAndInstallModel(
-        storagePath:
-            'updates/models/sms_scam_model_v${widget.latestSmsModelVersion}.tflite',
-        modelVersion: widget.latestSmsModelVersion,
-      );
-
-      smsService.close();
-      if (!mounted) return;
-
-      if (result['success'] == true) {
-        await _showUpdateDialog(
-          title: "SMS Model Updated",
-          message:
-              "SMS Detection Model v${widget.latestSmsModelVersion} "
-              "has been installed and will be used for the next analysis.",
-          success: true,
-          returnToHome: true,
-        );
-      } else {
-        await _showUpdateDialog(
-          title: "Update Failed",
-          message:
-              result['error']?.toString() ??
-              "The SMS detection model could not be updated. "
-                  "Your current model will continue to be used.",
-          success: false,
-        );
-      }
-    } catch (e) {
-      if (!mounted) return;
-
-      await _showUpdateDialog(
-        title: "Update Failed",
-        message:
-            "The SMS detection model could not be updated. "
-            "Your current model will continue to be used.",
-        success: false,
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isUpdatingSmsModel = false;
-        });
-      }
-    }
-  }
-
-  // ============================================================
-  // VOICE MODEL UPDATE
-  // ============================================================
-
-  Future<void> _updateVoiceModel() async {
-    if (_isUpdatingVoiceModel) return;
-
-    setState(() {
-      _isUpdatingVoiceModel = true;
-    });
-
-    log('🎤 BUTTON: Update Voice Model pressed.');
-
-    try {
-      final voiceService = VoiceDetectionService();
-
-      log('🎤 SERVICE: VoiceDetectionService created.');
-
-      final storagePath =
-          'updates/models/voice_model_v${widget.latestVoiceModelVersion}.tflite';
-
-      log('📦 STORAGE PATH: $storagePath');
-      log('🎤 TARGET VERSION: ${widget.latestVoiceModelVersion}');
-
-      log('☁️ STARTING VOICE MODEL DOWNLOAD...');
-
-      final success = await voiceService.downloadAndInstallModel(
-        storagePath: storagePath,
-        modelVersion: widget.latestVoiceModelVersion,
-      );
-
-      log('🎤 DOWNLOAD/INSTALL RESULT: $success');
-
-      if (!mounted) return;
-
-      if (success) {
-        log('✅ VOICE MODEL UPDATE SUCCESS.');
-
-        await _showUpdateDialog(
-          title: "Voice Model Updated",
-          message:
-              "Voice Detection Model v${widget.latestVoiceModelVersion} "
-              "has been installed and will be used for the next analysis.",
-          success: true,
-          returnToHome: true,
-        );
-
-        log('🏠 RETURNING TO HOME AFTER VOICE UPDATE.');
-      } else {
-        log('❌ VOICE MODEL UPDATE RETURNED FALSE.');
-
-        await _showUpdateDialog(
-          title: "Update Failed",
-          message:
-              "The voice detection model could not be updated. "
-              "Your current model will continue to be used.",
-          success: false,
-        );
-      }
-    } catch (e, stackTrace) {
-      log('❌ VOICE MODEL UPDATE ERROR: $e');
-      log('❌ STACK TRACE: $stackTrace');
-
-      if (!mounted) return;
-
-      await _showUpdateDialog(
-        title: "Update Failed",
-        message:
-            "The voice detection model could not be updated. "
-            "Your current model will continue to be used.",
-        success: false,
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isUpdatingVoiceModel = false;
-        });
-      }
-    }
-  }
-
-  // ============================================================
-  // ============================================================
-  //                        NEW UI (VIEW ONLY)
-  // ============================================================
+  // APP UPDATE PRESENTATION
   // ============================================================
 
   Widget _sectionLabel(String text) {
@@ -429,8 +279,8 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
     final String subtitle = !_hasUpdateInfo
         ? 'Reconnect Wi-Fi or reopen Home to check again.'
         : count > 0
-        ? 'Newer app and detection models are ready.'
-        : 'Your app and detection models are on the latest versions.';
+        ? 'A newer version of PARE is available.'
+        : 'Your app is on the latest published version.';
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 400),
@@ -487,10 +337,7 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final updateCount =
-        (widget.appUpdateAvailable ? 1 : 0) +
-        (widget.smsModelUpdateAvailable ? 1 : 0) +
-        (widget.voiceModelUpdateAvailable ? 1 : 0);
+    final updateCount = widget.appUpdateAvailable ? 1 : 0;
 
     return Scaffold(
       backgroundColor: backgroundColor,
@@ -502,7 +349,7 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
             children: [
               PareHeader(
                 title: 'Updates',
-                subtitle: 'App and detection models',
+                subtitle: 'Application version and download',
                 onBack: () => Navigator.pop(context),
               ),
 
@@ -521,14 +368,14 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
                       _sectionLabel('App'),
                       _updateCard(
                         icon: Icons.phone_android_rounded,
-                        title: "P.A.R.E. application",
+                        title: "PARE application",
                         currentVersion: widget.installedAppVersion,
                         latestVersion: widget.latestAppVersion,
                         description: widget.appUpdateAvailable
-                            ? "A newer version of the P.A.R.E. application is available."
-                            : "Your P.A.R.E. application is using the latest available version.",
+                            ? "A newer version of the PARE application is available."
+                            : "Your PARE application is using the latest available version.",
                         buttonText: widget.appUpdateAvailable
-                            ? "Get app update"
+                            ? "Download APK"
                             : "Up to Date",
                         onPressed: widget.appUpdateAvailable
                             ? _openAppUpdate
@@ -539,47 +386,6 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
                       // ------------------------------------------------
                       // DETECTION MODELS
                       // ------------------------------------------------
-                      _sectionLabel('Detection models'),
-                      _updateCard(
-                        icon: Icons.sms_outlined,
-                        title: "Message protection",
-                        currentVersion: "v${widget.installedSmsModelVersion}",
-                        latestVersion: "v${widget.latestSmsModelVersion}",
-                        description: widget.smsModelUpdateAvailable
-                            ? "An improved SMS scam detection model is available."
-                            : "Your SMS scam detection model is using the latest available version.",
-                        buttonText: widget.smsModelUpdateAvailable
-                            ? (_isUpdatingSmsModel
-                                  ? "Updating SMS Model..."
-                                  : "Update message protection")
-                            : "Up to Date",
-                        onPressed: widget.smsModelUpdateAvailable
-                            ? (_isUpdatingSmsModel ? null : _updateSmsModel)
-                            : null,
-                        isLoading: _isUpdatingSmsModel,
-                        isAvailable: widget.smsModelUpdateAvailable,
-                      ),
-
-                      _updateCard(
-                        icon: Icons.graphic_eq_rounded,
-                        title: "Voice checks",
-                        currentVersion: "v${widget.installedVoiceModelVersion}",
-                        latestVersion: "v${widget.latestVoiceModelVersion}",
-                        description: widget.voiceModelUpdateAvailable
-                            ? "A newer voice detection model is available."
-                            : "Your voice detection model is using the latest available version.",
-                        buttonText: widget.voiceModelUpdateAvailable
-                            ? (_isUpdatingVoiceModel
-                                  ? "Updating Voice Model..."
-                                  : "Update voice checks")
-                            : "Up to Date",
-                        onPressed: widget.voiceModelUpdateAvailable
-                            ? (_isUpdatingVoiceModel ? null : _updateVoiceModel)
-                            : null,
-                        isLoading: _isUpdatingVoiceModel,
-                        isAvailable: widget.voiceModelUpdateAvailable,
-                      ),
-
                       const SizedBox(height: 2),
 
                       // ------------------------------------------------
@@ -606,7 +412,7 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
                             SizedBox(width: 10),
                             Expanded(
                               child: Text(
-                                "P.A.R.E. checks for updates when Wi-Fi connects while the app is open. App updates change screens and features; protection updates improve detection separately. For this APK, use Get app update and approve installation in Android. Wi-Fi alone does not install it. Version details are available for support.",
+                                "Download the latest PARE APK, then open it and follow the Android installation prompts. Your confirmation is required. Detection improvements are included in app releases.",
                                 style: TextStyle(
                                   fontSize: 12.5,
                                   color: mutedColor,
@@ -745,7 +551,7 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
                 Expanded(child: _versionBox("Latest", latestVersion)),
               ],
             ),
-          ] else if (_hasUpdateInfo && currentVersion.isNotEmpty) ...[
+          ] else if (currentVersion.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text(
               'Version $currentVersion',

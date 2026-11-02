@@ -217,7 +217,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               const SizedBox(height: 12),
               const Text(
-                'Log out of P.A.R.E?',
+                'Log out of PARE?',
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w800,
@@ -286,7 +286,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _header() {
     return PareHeader(
-      title: 'Settings',
+      title: 'PARE',
       subtitle: 'Manage protection',
       username: _username,
     );
@@ -664,7 +664,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'P.A.R.E',
+                  'PARE',
                   style: TextStyle(
                     fontSize: 14.5,
                     fontWeight: FontWeight.w700,

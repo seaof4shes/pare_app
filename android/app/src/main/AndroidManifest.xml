@@ -16,7 +16,7 @@
         android:enableOnBackInvokedCallback="true"
         android:allowBackup="false"
         android:usesCleartextTraffic="false"
-        android:label="pare_app"
+        android:label="PARE"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

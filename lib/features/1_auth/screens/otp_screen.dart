@@ -1,3 +1,4 @@
+import '../widgets/auth_icons.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -190,7 +191,7 @@ class _OtpScreenState extends State<OtpScreen> {
     );
 
     if (!restored) {
-      throw Exception('Unable to restore the P.A.R.E. account from Firebase.');
+      throw Exception('Unable to restore the PARE account from Firebase.');
     }
   }
 
@@ -452,29 +453,6 @@ class _OtpScreenState extends State<OtpScreen> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Text(
-                        "P.A.R.E",
-                        style: TextStyle(
-                          fontSize: 42,
-                          fontWeight: FontWeight.w800,
-                          color: primaryBlue,
-                        ),
-                      ),
-
-                      const SizedBox(height: 8),
-
-                      const Text(
-                        "Protecting All Random Exchange",
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.black87,
-                        ),
-                      ),
-
-                      const SizedBox(height: 30),
-
                       Container(
                         margin: const EdgeInsets.symmetric(horizontal: 24),
                         padding: const EdgeInsets.all(24),
@@ -496,13 +474,25 @@ class _OtpScreenState extends State<OtpScreen> {
 
                             const SizedBox(height: 12),
 
-                            Text(
-                              "Code sent to $_maskedPhone",
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                color: Colors.white70,
-                                fontSize: 14,
-                              ),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const AuthFieldIcon(
+                                  AuthIcons.code,
+                                  onDark: true,
+                                ),
+                                const SizedBox(width: 8),
+                                Flexible(
+                                  child: Text(
+                                    "Code sent to $_maskedPhone",
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
 
                             const SizedBox(height: 25),

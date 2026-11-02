@@ -1,0 +1,9 @@
+{
+  "samples": 1640,
+  "max_abs_error": 1.5348196029663086e-06,
+  "severity_disagreements": 0,
+  "bytes": 530476,
+  "source_sha256": "321c87385ec10efc2066833be875402e88414e0f97b07231cee7ca71b3bc8b93",
+  "candidate_sha256": "9374ba6ae0edb6c10a9014d9eb9b2464c17ed927ede964542938e6fffbd847fa",
+  "tensorflow": "2.21.0"
+}

@@ -21,7 +21,7 @@ class PareUpdateStatus {
 
   static final PareUpdateStatus instance = PareUpdateStatus._();
 
-  /// True when an app or model update is available.
+  /// True when an application update is available to the user.
   final ValueNotifier<bool> available = ValueNotifier<bool>(false);
 
   /// Registered by HomeScreen; opens the Updates screen.

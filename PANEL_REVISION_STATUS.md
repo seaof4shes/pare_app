@@ -1,11 +1,11 @@
 # Initial-defense comments: implementation and acceptance status
 
-Updated 31 October 2026 for app 1.0.6+7. Implementation is not the same as completing independent validation.
+Updated 2 November 2026 for app 1.0.8+2009. Implementation is not the same as completing independent validation.
 
 | Panel comment | Implemented | Evidence and remaining acceptance |
 | --- | --- | --- |
 | Show SMS detection breakdown and summary; reduce Toyota-survey false alarms | Verdict and severity summary, original message, explanation, rule evidence, model indicator and version. Original explanation saved with each new record. Message now precedes explanation. | Exact provided Toyota survey is Low with bundled SMS model v4; harmful OTP-sharing and prize-payment variants remain flagged in regression tests. Demonstrate real incoming messages and collect a new independently labeled evaluation set. |
-| Separate app version/update from SMS and voice models | Three separate comparisons and update actions, with version numbers inside collapsed Version details. SMS packages validate matching vocabulary, preprocessing, version and hashes; voice packages validate compatibility. Invalid updates keep the working model. | App 1.0.6+7 and bundled SMS v4 are distinct versions. Defense distribution is by APK; Wi-Fi checks do not silently install it. Published cloud artifacts/metadata still need release preparation and end-to-end acceptance. Confirm with the adviser if the original comment also meant a separate app-distribution process. |
+| Separate app version/update from SMS and voice models | App and model versions remain independent internally and detection records retain their model metadata. The user update page now displays only the application version, app-update status and Download APK action. Model-only updates do not light the Home badge. Detection changes are shipped in application releases. | Android still requires installation confirmation; there is no silent self-installation. Publishing a correctly signed universal APK and matching cloud version/download metadata remains a release task. Confirm the panel’s intended meaning during the defense rather than claiming they explicitly required this UI. |
 | Explain severity: how does a message become High? Is it percentage based? | Low/Medium/High labels, explanations and separate technical model/rule indicators. High is based on harmful-request rules, not a claim that a message is a particular percent fraudulent. | Demonstrate the cases below and document the actual decision policy. Model indicators are not calibrated fraud probabilities. Validate false alarms and missed scams separately. |
 
 ## Current SMS decision policy
@@ -22,7 +22,7 @@ Rule evidence is a weighted score, capped at 20 for Medium/High: credential requ
 2. Receive the exact Toyota survey. Open history: Low summary, message before explanation, action on the right, technical details collapsed.
 3. Receive an OTP-sharing request and a prize-payment request. Explain the High evidence and show a notification if permission/alerts are enabled.
 4. Disable alerts and receive a new risky SMS: save history as Logged Only. Disable Message Detection: no analysis of new SMS. Disable Voice Detection: record/upload controls disable and the setting survives reopening.
-5. Show the separate application, Message protection, and Voice checks cards. Version details are collapsed by default for support and defense demonstrations. Wi-Fi reconnection while the app is open triggers an update check; the defense APK still requires the user to open the update and approve Android installation. This is not silent automatic installation or background downloading. Demonstrate update rejection/fallback with controlled invalid packages and a separately tested valid newer package; do not advertise unpublished files as released.
+5. Show the app-only Updates page: installed application version, available version when published, and Download APK. Explain that the download opens outside the app and Android requires confirmation. Explain model-version separation using detection technical details and implementation records, not user-facing model installation controls.
 6. Background the app and repeat the SMS test. Android scheduling/battery restrictions and force-stop remain limitations; the headless-worker test does not replace carrier/device acceptance testing.
 
 ## Additional release gates

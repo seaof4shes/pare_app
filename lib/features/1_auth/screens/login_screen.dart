@@ -1,3 +1,4 @@
+import '../widgets/auth_icons.dart';
 import 'package:flutter/material.dart';
 import '../../../core/security/login_policy.dart';
 import 'package:flutter/services.dart';
@@ -157,7 +158,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
               if (!restored) {
                 throw Exception(
-                  "Unable to restore the P.A.R.E. account from Firebase.",
+                  "Unable to restore the PARE account from Firebase.",
                 );
               }
 
@@ -393,7 +394,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ? (_username.isNotEmpty
               ? 'Hi $_username, enter your MPIN'
               : 'Enter your MPIN to unlock')
-        : 'Welcome to P.A.R.E';
+        : 'Welcome to PARE';
 
     return ClipRect(
       child: Container(
@@ -493,7 +494,7 @@ class _LoginScreenState extends State<LoginScreen> {
         prefix: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.phone_iphone_rounded, size: 19, color: mutedColor),
+            const AuthFieldIcon(AuthIcons.phone),
             const SizedBox(width: 8),
             const Text(
               '+63',
@@ -536,20 +537,10 @@ class _LoginScreenState extends State<LoginScreen> {
       ),
       decoration: _pillDecoration(
         hint: '6-digit MPIN',
-        prefix: const Icon(
-          Icons.lock_outline_rounded,
-          size: 19,
-          color: mutedColor,
-        ),
-        suffix: IconButton(
+        prefix: const AuthFieldIcon(AuthIcons.pin),
+        suffix: AuthPinVisibilityButton(
+          obscured: _obscurePin,
           onPressed: () => setState(() => _obscurePin = !_obscurePin),
-          icon: Icon(
-            _obscurePin
-                ? Icons.visibility_outlined
-                : Icons.visibility_off_outlined,
-            size: 19,
-            color: mutedColor,
-          ),
         ),
       ),
       validator: (v) {
@@ -770,78 +761,10 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
               ),
-
-              // Shield illustration sitting on the sheet edge
-              // (this is the "plant" from the reference design).
-              Positioned(
-                top: sheetTop - 108,
-                right: 28,
-                child: const CustomPaint(
-                  size: Size(96, 130),
-                  painter: _ShieldPainter(),
-                ),
-              ),
             ],
           ),
         ),
       ),
     );
   }
-}
-
-/// Simple two-tone shield with a check mark and a soft ground shadow.
-class _ShieldPainter extends CustomPainter {
-  const _ShieldPainter();
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final w = size.width;
-    final h = size.height - 12; // leave room for the shadow
-
-    // Ground shadow
-    canvas.drawOval(
-      Rect.fromCenter(
-        center: Offset(w / 2, h + 7),
-        width: w * 0.85,
-        height: 10,
-      ),
-      Paint()..color = const Color(0x22092C56),
-    );
-
-    final shield = Path()
-      ..moveTo(w * 0.5, 0)
-      ..cubicTo(w * 0.65, h * 0.10, w * 0.85, h * 0.14, w, h * 0.14)
-      ..cubicTo(w, h * 0.60, w * 0.78, h * 0.85, w * 0.5, h)
-      ..cubicTo(w * 0.22, h * 0.85, 0, h * 0.60, 0, h * 0.14)
-      ..cubicTo(w * 0.15, h * 0.14, w * 0.35, h * 0.10, w * 0.5, 0)
-      ..close();
-
-    // Right half (darker)
-    canvas.drawPath(shield, Paint()..color = const Color(0xFF2A5298));
-
-    // Left half (lighter) for the two-tone look
-    canvas.save();
-    canvas.clipRect(Rect.fromLTWH(0, 0, w / 2, h));
-    canvas.drawPath(shield, Paint()..color = const Color(0xFF5B8DD6));
-    canvas.restore();
-
-    // Check mark
-    final check = Path()
-      ..moveTo(w * 0.27, h * 0.50)
-      ..lineTo(w * 0.44, h * 0.66)
-      ..lineTo(w * 0.74, h * 0.36);
-
-    canvas.drawPath(
-      check,
-      Paint()
-        ..color = Colors.white
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = w * 0.08
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

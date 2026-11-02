@@ -226,7 +226,7 @@ class _HistoryScreenState extends State<HistoryScreen>
           ],
         ),
         content: Text(
-          'P.A.R.E. will open your messaging app '
+          'PARE will open your messaging app '
           'to this sender.\n\n'
           'Sender: ${_formatSender(senderNumber)}\n\n'
           'Select "Block" or "Block & report spam" '
@@ -848,7 +848,7 @@ class _HistoryScreenState extends State<HistoryScreen>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               PareHeader(
-                title: 'History',
+                title: 'PARE',
                 subtitle: 'Detection log',
                 username: _username,
               ),

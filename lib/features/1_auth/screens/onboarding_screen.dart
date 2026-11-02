@@ -23,7 +23,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     _SlideData(
       title: 'Check suspicious messages',
       body:
-          'P.A.R.E. checks texts for suspicious requests and explains the risk. Low risk does not verify the sender.',
+          'PARE checks texts for suspicious requests and explains the risk. Low risk does not verify the sender.',
     ),
     _SlideData(
       title: 'Check voice recordings',

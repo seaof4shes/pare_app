@@ -2,6 +2,75 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pare_app/core/ml/sms_risk_policy.dart';
 
 void main() {
+  test(
+    'Summary identifies OTP and urgency without inventing other evidence',
+    () {
+      final result = SmsRiskPolicy.assess('Send your OTP immediately.', 0.1);
+      expect(result.riskLevel, 'HIGH');
+      expect(result.evidenceScore, 8);
+      expect(
+        result.explanation.split('\n\n').first,
+        contains('asks for your OTP'),
+      );
+      expect(result.explanation, contains('pressures you to act quickly'));
+      expect(result.explanation, contains('"immediately"'));
+      expect(result.explanation, contains('access your account'));
+      expect(
+        result.explanation,
+        isNot(contains('Account action with a link:')),
+      );
+      expect(result.explanation, isNot(contains('Prize payment:')));
+    },
+  );
+  test(
+    'Personal-data explanation names the requested field without copying its value',
+    () {
+      final result = SmsRiskPolicy.assess(
+        'Please send your card number 123456789.',
+        0.1,
+      );
+      expect(result.riskLevel, 'MEDIUM');
+      expect(result.explanation, contains('requests your card number'));
+      expect(result.explanation, isNot(contains('123456789')));
+    },
+  );
+  test(
+    'Urgency alone and safety advice do not create harmful-request explanations',
+    () {
+      for (final message in [
+        'URGENT: The meeting starts soon.',
+        'Never share your OTP.',
+      ]) {
+        final result = SmsRiskPolicy.assess(message, 0.1);
+        expect(result.riskLevel, 'LOW');
+        expect(result.explanation, isNot(contains('Detected signs:')));
+      }
+    },
+  );
+  test(
+    'Model-only caution explicitly acknowledges the lack of a specific request',
+    () {
+      final result = SmsRiskPolicy.assess(
+        'An unexpected offer awaits you',
+        0.95,
+      );
+      expect(result.riskLevel, 'MEDIUM');
+      expect(
+        result.explanation,
+        contains('no specific harmful request was identified'),
+      );
+      expect(result.explanation, isNot(contains('Detected signs:')));
+    },
+  );
+  test('Prize and personal details are explained together', () {
+    final result = SmsRiskPolicy.assess(
+      'You won a prize! Submit your personal information.',
+      0.8,
+    );
+    expect(result.riskLevel, 'HIGH');
+    expect(result.explanation, contains('Prize and personal details:'));
+    expect(result.explanation, isNot(contains('Prize payment:')));
+  });
   const toyotaSurvey =
       'Happy Day!  This is from Customer Relations Department of Toyota Shaw Inc.   We would like to conduct a quick o know your experience from your previous visit with us.  We would appreciate your s this will be used for the improvement of our operations.  1. How likely are you to recommend our Dealer to your family and friends? (1-10, 1 is the Lowest and 10 is the Highest)  2. What are the Particulars things that make you recommend us so we could continue providing it to our customers? What are the particular things that we need to improve on our operations?  3. How satisfied are you with the overall service provided? (1-5, 1 very dissatisfied and 5 is very satisfied)  Q1. Was the PMS/Repair done properly? Q2. Was the Promise time to complete the service met? Q3. Was the Promise time reasonable?  We would like to inform you that we have our Toyota App, and we highly encourage you to register for easier transaction on your next visit. You may download it in your App Store or Google Play store, just search for MyToyota.  Should you need any assistance, please feel free to contact us.  Thank you!  **Please be informed that ToyotaShaw Inc. complies with Data Privacy Act of 2012 to ensure the confidentiality and safety of your information**  ';
 

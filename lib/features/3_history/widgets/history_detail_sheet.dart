@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-/// Redesigned history detail sheet for P.A.R.E.
+/// Redesigned history detail sheet for PARE
 ///
 /// Layout (top to bottom):
 ///   1. Sender header (fixed)
@@ -251,6 +251,13 @@ class _SheetBodyState extends State<_SheetBody> {
   // ── 2. Verdict card ──────────────────────────────────────────────────────────
   Widget _verdictCard(_RiskStyle risk) {
     final confidenceRaw = (item['confidenceRaw'] as num?)?.toDouble() ?? 0;
+    final explanation = item['detectionExplanation'] as String?;
+    // New saved explanations lead with a short, evidence-specific summary.
+    // Keep historical results intact rather than reclassifying old messages.
+    final summary =
+        !_isAudio && explanation != null && explanation.contains('\n\n')
+        ? explanation.split('\n\n').first
+        : risk.summary;
 
     return Container(
       padding: const EdgeInsets.all(18),
@@ -288,7 +295,7 @@ class _SheetBodyState extends State<_SheetBody> {
                     ),
                     const SizedBox(height: 3),
                     Text(
-                      risk.summary,
+                      summary,
                       style: const TextStyle(
                         fontSize: 13,
                         height: 1.4,
@@ -314,7 +321,7 @@ class _SheetBodyState extends State<_SheetBody> {
                   fit: BoxFit.scaleDown,
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    'What P.A.R.E. did?',
+                    'What PARE did?',
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
@@ -423,9 +430,18 @@ class _SheetBodyState extends State<_SheetBody> {
   Widget _whyCard(_RiskStyle risk) {
     final explanation = item['detectionExplanation'] as String?;
 
+    final voiceReason = switch (risk.level) {
+      2 =>
+        'The voice model classified the audio patterns as likely synthetic. This result is based on the audio signal, not the words the speaker said.',
+      1 =>
+        'The voice model found an uncertain result between natural and synthetic speech. Treat it as a reason to verify the caller, not proof of a fake voice.',
+      0 =>
+        'The voice model classified the audio patterns as likely natural speech. A natural-sounding voice can still belong to a scammer.',
+      _ =>
+        'There is not enough saved information to explain this voice result.',
+    };
     final text = _isAudio
-        ? 'Voice analysis estimates whether speech is synthetic. '
-              'It cannot tell if a caller is honest or fraudulent.'
+        ? '$voiceReason\n\nThe model does not identify the speaker or verify their claims. It does not provide a specific acoustic cause for this individual result. Confirm unexpected requests using an independently obtained contact.'
         : (explanation != null && explanation.trim().isNotEmpty)
         ? explanation
         : 'This is an older record without a saved breakdown. '

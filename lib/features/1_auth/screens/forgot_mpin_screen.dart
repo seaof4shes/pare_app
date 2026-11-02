@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import '../widgets/auth_icons.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -5,6 +8,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:pare_app/core/database/user_service.dart';
 import 'package:pare_app/core/utils/hash_helper.dart';
 import 'login_screen.dart';
+import 'rings_painter.dart';
 
 class ForgotMpinScreen extends StatefulWidget {
   const ForgotMpinScreen({super.key});
@@ -14,6 +18,7 @@ class ForgotMpinScreen extends StatefulWidget {
 }
 
 class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
+  final _formKey = GlobalKey<FormState>();
   final _phoneController = TextEditingController();
   final _otpController = TextEditingController();
   final _newMpinController = TextEditingController();
@@ -22,23 +27,51 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
   String? _verificationId;
   String? _verifiedPhone;
   String? _requestedPhone;
+  int? _resendToken;
+
   bool _otpSent = false;
   bool _otpVerified = false;
   bool _loading = false;
+  bool _autoValidate = false;
   bool _obscureNew = true;
   bool _obscureConfirm = true;
 
+  Timer? _resendTimer;
+  int _resendSeconds = 0;
+
+  // Design tokens (same as LoginScreen)
   static const Color primaryBlue = Color(0xFF092C56);
-  static const Color cardBlue = Color(0xFF1E3A5F);
-  static const Color whiteText = Color(0xFFF0F5F4);
+  static const Color heroBlue = Color(0xFF14437F);
+  static const Color accentBlue = Color(0xFF2A5298);
+  static const Color sheetColor = Color(0xFFEEF2F7);
+  static const Color inkColor = Color(0xFF10192B);
+  static const Color mutedColor = Color(0xFF6B7686);
+  static const Color dangerColor = Color(0xFFC0392B);
+  static const Color trackColor = Color(0xFFD5DCE6);
+
+  /// 0 = send OTP, 1 = verify OTP, 2 = reset MPIN
+  int get _step => !_otpSent
+      ? 0
+      : !_otpVerified
+      ? 1
+      : 2;
 
   @override
   void dispose() {
+    _resendTimer?.cancel();
     _phoneController.dispose();
     _otpController.dispose();
     _newMpinController.dispose();
     _confirmMpinController.dispose();
     super.dispose();
+  }
+
+  // ─── Helpers ───────────────────────────────────────────────────────────────
+
+  /// Accepts "9XXXXXXXXX" or "09XXXXXXXXX" and returns "09XXXXXXXXX".
+  String _normalizePhone(String v) {
+    if (v.length == 10 && v.startsWith('9')) return '0$v';
+    return v;
   }
 
   String _formatPhone(String rawPhone) {
@@ -47,68 +80,128 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
         : '+63$rawPhone';
   }
 
-  Future<void> _sendOtp() async {
-    final rawPhone = _phoneController.text.trim();
+  /// "+639123456789" -> "+63 912 345 6789"
+  String _prettyPhone(String? phone) {
+    if (phone == null || !phone.startsWith('+63') || phone.length != 13) {
+      return phone ?? '';
+    }
+    final d = phone.substring(3);
+    return '+63 ${d.substring(0, 3)} ${d.substring(3, 6)} ${d.substring(6)}';
+  }
 
-    if (rawPhone.length != 11 || !rawPhone.startsWith('09')) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Enter a valid 11-digit phone number")),
-      );
+  void _snack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  void _startResendCooldown() {
+    _resendTimer?.cancel();
+    setState(() => _resendSeconds = 30);
+    _resendTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
+      setState(() => _resendSeconds--);
+      if (_resendSeconds <= 0) t.cancel();
+    });
+  }
+
+  /// Arrow / system back: step 1 leaves the screen, later steps go back one.
+  void _onBack() {
+    if (_loading) return;
+
+    if (_step == 0) {
+      Navigator.pop(context);
       return;
     }
 
-    final phone = _formatPhone(rawPhone);
-    _requestedPhone = phone;
-    _otpVerified = false;
-    _verifiedPhone = null;
+    // Steps 2 and 3 both return to the phone step and clear verification.
+    _resendTimer?.cancel();
+    setState(() {
+      _otpSent = false;
+      _otpVerified = false;
+      _verificationId = null;
+      _verifiedPhone = null;
+      _requestedPhone = null;
+      _resendToken = null;
+      _resendSeconds = 0;
+      _autoValidate = false;
+      _otpController.clear();
+      _newMpinController.clear();
+      _confirmMpinController.clear();
+    });
+  }
 
-    setState(() => _loading = true);
+  // ─── Logic ─────────────────────────────────────────────────────────────────
 
-    await FirebaseAuth.instance.verifyPhoneNumber(
-      phoneNumber: phone,
-      verificationCompleted: (_) {},
-      verificationFailed: (e) {
-        if (!mounted) return;
+  Future<void> _sendOtp({bool resend = false}) async {
+    if (_loading) return;
 
-        setState(() => _loading = false);
+    final String phone;
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.message ?? "Failed to send OTP")),
-        );
-      },
-      codeSent: (verificationId, _) {
-        if (!mounted) return;
+    if (resend) {
+      phone = _requestedPhone ?? '';
+      if (phone.isEmpty) return;
+    } else {
+      setState(() => _autoValidate = true);
+      if (!_formKey.currentState!.validate()) return;
+      phone = _formatPhone(_normalizePhone(_phoneController.text.trim()));
+    }
 
-        setState(() {
+    setState(() {
+      _requestedPhone = phone;
+      _otpVerified = false;
+      _verifiedPhone = null;
+      _loading = true;
+    });
+
+    try {
+      await FirebaseAuth.instance.verifyPhoneNumber(
+        phoneNumber: phone,
+        forceResendingToken: resend ? _resendToken : null,
+        verificationCompleted: (_) {},
+        verificationFailed: (e) {
+          if (!mounted) return;
+          setState(() => _loading = false);
+          _snack(e.message ?? "Failed to send OTP");
+        },
+        codeSent: (verificationId, resendToken) {
+          if (!mounted) return;
+
+          setState(() {
+            _verificationId = verificationId;
+            _resendToken = resendToken;
+            _otpSent = true;
+            _loading = false;
+            _autoValidate = false;
+            _otpController.clear();
+          });
+
+          _startResendCooldown();
+          _snack("OTP sent");
+        },
+        codeAutoRetrievalTimeout: (verificationId) {
           _verificationId = verificationId;
-          _otpSent = true;
-          _loading = false;
-        });
-
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("OTP sent")));
-      },
-      codeAutoRetrievalTimeout: (verificationId) {
-        _verificationId = verificationId;
-      },
-    );
+        },
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      _snack("Failed to send OTP");
+    }
   }
 
   Future<void> _verifyOtp() async {
-    final otp = _otpController.text.trim();
+    if (_loading) return;
 
-    if (otp.length != 6) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("Enter 6-digit OTP")));
-      return;
-    }
+    setState(() => _autoValidate = true);
+    if (!_formKey.currentState!.validate()) return;
 
     if (_verificationId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Please request an OTP first")),
-      );
+      _snack("Please request an OTP first");
       return;
     }
 
@@ -117,30 +210,33 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
     try {
       final credential = PhoneAuthProvider.credential(
         verificationId: _verificationId!,
-        smsCode: otp,
+        smsCode: _otpController.text.trim(),
       );
 
       await FirebaseAuth.instance.signInWithCredential(credential);
 
       if (!mounted) return;
 
+      final verifiedPhone = FirebaseAuth.instance.currentUser?.phoneNumber;
+      final matches = verifiedPhone != null && verifiedPhone == _requestedPhone;
+
       setState(() {
-        _verifiedPhone = FirebaseAuth.instance.currentUser?.phoneNumber;
-        _otpVerified = _verifiedPhone == _requestedPhone;
+        _verifiedPhone = verifiedPhone;
+        _otpVerified = matches;
         _loading = false;
+        _autoValidate = false;
       });
 
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("OTP verified")));
+      if (matches) {
+        _resendTimer?.cancel();
+        _snack("OTP verified");
+      } else {
+        _snack("This code doesn't match that phone number");
+      }
     } catch (_) {
       if (!mounted) return;
-
       setState(() => _loading = false);
-
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("Invalid OTP")));
+      _snack("Invalid OTP");
     }
   }
 
@@ -159,31 +255,19 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
   }
 
   Future<void> _resetMpin() async {
-    final phone = _formatPhone(_phoneController.text.trim());
+    if (_loading) return;
+
+    final phone = _requestedPhone ?? '';
+
+    if (!_otpVerified || phone.isEmpty || _verifiedPhone != phone) {
+      _snack('Verify this phone number before resetting the MPIN.');
+      return;
+    }
+
+    setState(() => _autoValidate = true);
+    if (!_formKey.currentState!.validate()) return;
+
     final newMpin = _newMpinController.text.trim();
-    final confirmMpin = _confirmMpinController.text.trim();
-
-    if (!_otpVerified || _verifiedPhone != phone) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Verify this phone number before resetting the MPIN.'),
-        ),
-      );
-      return;
-    }
-    if (!RegExp(r'^\d{6}$').hasMatch(newMpin)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("MPIN must be exactly 6 digits")),
-      );
-      return;
-    }
-
-    if (newMpin != confirmMpin) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("MPINs do not match")));
-      return;
-    }
 
     setState(() => _loading = true);
 
@@ -199,14 +283,7 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
         if (sameAsCurrent) {
           if (!mounted) return;
           setState(() => _loading = false);
-
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                "New MPIN must be different from your current MPIN",
-              ),
-            ),
-          );
+          _snack("New MPIN must be different from your current MPIN");
           return;
         }
 
@@ -225,9 +302,7 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
 
       setState(() => _loading = false);
 
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("MPIN reset successfully")));
+      _snack("MPIN reset successfully");
 
       Navigator.pushAndRemoveUntil(
         context,
@@ -236,287 +311,491 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-
       setState(() => _loading = false);
-
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text("Error: $e")));
+      _snack("Error: $e");
     }
   }
 
-  InputDecoration _fieldDecoration({
-    required String hint,
-    required IconData suffixIcon,
-    Widget? suffixWidget,
-  }) {
-    return InputDecoration(
-      hintText: hint,
-      hintStyle: const TextStyle(color: Colors.white54, fontSize: 15),
-      filled: true,
-      fillColor: const Color.fromRGBO(255, 255, 255, 0.08),
-      suffixIcon:
-          suffixWidget ?? Icon(suffixIcon, color: Colors.white60, size: 20),
-      counterText: "",
-      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: const BorderSide(
-          color: Color.fromRGBO(255, 255, 255, 0.25),
+  void _onPrimaryPressed() {
+    switch (_step) {
+      case 0:
+        _sendOtp();
+        break;
+      case 1:
+        _verifyOtp();
+        break;
+      default:
+        _resetMpin();
+    }
+  }
+
+  // ─── UI pieces ─────────────────────────────────────────────────────────────
+
+  Widget _hero(double height, double topInset) {
+    final titles = ['Forgot MPIN?', 'Verify OTP', 'Reset MPIN'];
+    final subtitles = [
+      "We'll text you a code to reset it",
+      'Enter the 6-digit code sent to ${_prettyPhone(_requestedPhone)}',
+      'Pick a new 6-digit MPIN, different from your current one',
+    ];
+
+    return ClipRect(
+      child: Container(
+        height: height,
+        width: double.infinity,
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [primaryBlue, heroBlue],
+          ),
         ),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: const BorderSide(color: Colors.white54),
-      ),
-    );
-  }
-
-  Widget _inputField({
-    required TextEditingController controller,
-    required String hint,
-    required IconData icon,
-    int maxLength = 11,
-    bool obscure = false,
-    Widget? suffixWidget,
-  }) {
-    return TextField(
-      controller: controller,
-      keyboardType: TextInputType.number,
-      maxLength: maxLength,
-      obscureText: obscure,
-      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-      cursorColor: Colors.white,
-      style: const TextStyle(color: whiteText, fontSize: 15),
-      decoration: _fieldDecoration(
-        hint: hint,
-        suffixIcon: icon,
-        suffixWidget: suffixWidget,
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final title = !_otpSent
-        ? "Forgot MPIN"
-        : !_otpVerified
-        ? "Verify OTP"
-        : "Reset MPIN";
-
-    final subtitle = !_otpSent
-        ? "Enter your phone number to receive an OTP."
-        : !_otpVerified
-        ? "Enter the 6-digit code sent to your phone."
-        : "Create a new 6-digit MPIN different from your current one.";
-
-    return Scaffold(
-      resizeToAvoidBottomInset: false,
-      backgroundColor: const Color(0xFFF2F5F8),
-      body: SafeArea(
-        child: Column(
+        child: Stack(
           children: [
-            Expanded(
-              child: Center(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 28,
-                    vertical: 24,
-                  ),
-                  child: Column(
-                    children: [
-                      const Text(
-                        "P.A.R.E",
-                        style: TextStyle(
-                          fontSize: 42,
-                          fontWeight: FontWeight.w900,
-                          color: primaryBlue,
-                          letterSpacing: 1.5,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      const Text(
-                        "Protecting All Random Exchanges",
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                          color: Colors.black54,
-                          letterSpacing: 0.3,
-                        ),
-                      ),
-                      const SizedBox(height: 32),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 24,
-                          vertical: 30,
-                        ),
-                        decoration: BoxDecoration(
-                          color: cardBlue,
-                          borderRadius: BorderRadius.circular(20),
-                          boxShadow: const [
-                            BoxShadow(
-                              color: Color.fromRGBO(9, 44, 86, 0.25),
-                              blurRadius: 20,
-                              offset: Offset(0, 8),
-                            ),
-                          ],
-                        ),
-                        child: Column(
-                          children: [
-                            Text(
-                              title,
-                              style: const TextStyle(
-                                fontSize: 22,
-                                fontWeight: FontWeight.w800,
-                                color: whiteText,
-                                letterSpacing: 0.5,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              subtitle,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                fontSize: 13,
-                                color: Colors.white70,
-                                height: 1.4,
-                              ),
-                            ),
-                            const SizedBox(height: 24),
-                            if (!_otpVerified) ...[
-                              _inputField(
-                                controller: _phoneController,
-                                hint: "Phone number",
-                                icon: Icons.phone_outlined,
-                                maxLength: 11,
-                              ),
-                              if (_otpSent) ...[
-                                const SizedBox(height: 14),
-                                _inputField(
-                                  controller: _otpController,
-                                  hint: "Enter OTP",
-                                  icon: Icons.sms_outlined,
-                                  maxLength: 6,
-                                ),
-                              ],
-                            ],
-                            if (_otpVerified) ...[
-                              _inputField(
-                                controller: _newMpinController,
-                                hint: "New 6-digit MPIN",
-                                icon: Icons.lock_outline,
-                                maxLength: 6,
-                                obscure: _obscureNew,
-                                suffixWidget: GestureDetector(
-                                  onTap: () {
-                                    setState(() {
-                                      _obscureNew = !_obscureNew;
-                                    });
-                                  },
-                                  child: Icon(
-                                    _obscureNew
-                                        ? Icons.lock_outline
-                                        : Icons.lock_open_outlined,
-                                    color: Colors.white60,
-                                    size: 20,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 14),
-                              _inputField(
-                                controller: _confirmMpinController,
-                                hint: "Confirm new MPIN",
-                                icon: Icons.lock_outline,
-                                maxLength: 6,
-                                obscure: _obscureConfirm,
-                                suffixWidget: GestureDetector(
-                                  onTap: () {
-                                    setState(() {
-                                      _obscureConfirm = !_obscureConfirm;
-                                    });
-                                  },
-                                  child: Icon(
-                                    _obscureConfirm
-                                        ? Icons.lock_outline
-                                        : Icons.lock_open_outlined,
-                                    color: Colors.white60,
-                                    size: 20,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 24),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 54,
-                        child: ElevatedButton(
-                          onPressed: _loading
-                              ? null
-                              : !_otpSent
-                              ? _sendOtp
-                              : !_otpVerified
-                              ? _verifyOtp
-                              : _resetMpin,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: primaryBlue,
-                            disabledBackgroundColor: Colors.grey.shade400,
-                            elevation: 4,
-                            shadowColor: const Color.fromRGBO(9, 44, 86, 0.4),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                          ),
-                          child: _loading
-                              ? const SizedBox(
-                                  width: 24,
-                                  height: 24,
-                                  child: CircularProgressIndicator(
-                                    color: Colors.white,
-                                    strokeWidth: 2.5,
-                                  ),
-                                )
-                              : Text(
-                                  !_otpSent
-                                      ? "Send OTP"
-                                      : !_otpVerified
-                                      ? "Verify OTP"
-                                      : "Reset MPIN",
-                                  style: const TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.w800,
-                                    color: whiteText,
-                                    letterSpacing: 0.5,
-                                  ),
-                                ),
-                        ),
-                      ),
-                    ],
+            const Positioned(
+              left: -80,
+              top: -80,
+              child: CustomPaint(size: Size(240, 240), painter: RingsPainter()),
+            ),
+            Positioned(
+              left: 16,
+              top: topInset + 10,
+              child: Material(
+                color: const Color.fromRGBO(255, 255, 255, 0.14),
+                shape: const CircleBorder(),
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: _loading ? null : _onBack,
+                  child: const SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: Icon(
+                      Icons.arrow_back_rounded,
+                      color: Colors.white,
+                      size: 20,
+                    ),
                   ),
                 ),
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.only(bottom: 28),
-              child: GestureDetector(
-                onTap: () => Navigator.pop(context),
-                child: const Text(
-                  "Back to Login",
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w800,
-                    color: primaryBlue,
-                    decoration: TextDecoration.underline,
-                    decorationColor: primaryBlue,
+            Positioned(
+              left: 26,
+              right: 26,
+              bottom: 56,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    titles[_step],
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 40,
+                      fontWeight: FontWeight.w800,
+                      height: 1.1,
+                    ),
                   ),
-                ),
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitles[_step],
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                      height: 1.35,
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _stepBar() {
+    return Row(
+      children: List.generate(3, (i) {
+        return Expanded(
+          child: Padding(
+            padding: EdgeInsets.only(right: i < 2 ? 6 : 0),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 250),
+              height: 4,
+              decoration: BoxDecoration(
+                color: i <= _step ? primaryBlue : trackColor,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+        );
+      }),
+    );
+  }
+
+  InputDecoration _pillDecoration({
+    required String hint,
+    required Widget prefix,
+    Widget? suffix,
+  }) {
+    OutlineInputBorder border(Color color, double width) => OutlineInputBorder(
+      borderRadius: BorderRadius.circular(30),
+      borderSide: BorderSide(color: color, width: width),
+    );
+
+    return InputDecoration(
+      counterText: '',
+      hintText: hint,
+      hintStyle: const TextStyle(color: Color(0xFF9AA4B2), fontSize: 14),
+      filled: true,
+      fillColor: Colors.white,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 17),
+      prefixIcon: Padding(
+        padding: const EdgeInsets.only(left: 18, right: 10),
+        child: prefix,
+      ),
+      prefixIconConstraints: const BoxConstraints(minWidth: 0, minHeight: 0),
+      suffixIcon: suffix,
+      enabledBorder: border(Colors.transparent, 1),
+      focusedBorder: border(accentBlue, 1.4),
+      errorBorder: border(dangerColor, 1),
+      focusedErrorBorder: border(dangerColor, 1.4),
+      errorStyle: const TextStyle(fontSize: 12, color: dangerColor),
+    );
+  }
+
+  Widget _phoneField() {
+    return TextFormField(
+      controller: _phoneController,
+      keyboardType: TextInputType.number,
+      maxLength: 11,
+      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+      style: const TextStyle(
+        color: inkColor,
+        fontSize: 15,
+        fontWeight: FontWeight.w500,
+      ),
+      decoration: _pillDecoration(
+        hint: '9XX XXX XXXX',
+        prefix: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const AuthFieldIcon(AuthIcons.phone),
+            const SizedBox(width: 8),
+            const Text(
+              '+63',
+              style: TextStyle(
+                color: inkColor,
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Container(width: 1, height: 20, color: const Color(0xFFE4E9F0)),
+          ],
+        ),
+      ),
+      validator: (v) {
+        if (v == null || v.isEmpty) return 'Phone number is required';
+
+        final n = _normalizePhone(v);
+
+        if (n.length != 11) return 'Please enter your 10-digit number';
+        if (!n.startsWith('09')) return 'Must start with 9';
+
+        return null;
+      },
+    );
+  }
+
+  Widget _otpField() {
+    return TextFormField(
+      controller: _otpController,
+      keyboardType: TextInputType.number,
+      maxLength: 6,
+      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+      style: const TextStyle(
+        color: inkColor,
+        fontSize: 15,
+        fontWeight: FontWeight.w500,
+        letterSpacing: 4,
+      ),
+      decoration: _pillDecoration(
+        hint: '6-digit code',
+        prefix: const AuthFieldIcon(AuthIcons.code),
+      ),
+      validator: (v) {
+        if (v == null || v.isEmpty) return 'OTP is required';
+        if (v.length != 6) return 'OTP must be exactly 6 digits';
+        return null;
+      },
+    );
+  }
+
+  Widget _mpinField({
+    required TextEditingController controller,
+    required String hint,
+    required bool obscure,
+    required VoidCallback onToggle,
+    required String? Function(String?) validator,
+  }) {
+    return TextFormField(
+      controller: controller,
+      keyboardType: TextInputType.number,
+      maxLength: 6,
+      obscureText: obscure,
+      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+      style: const TextStyle(
+        color: inkColor,
+        fontSize: 15,
+        fontWeight: FontWeight.w500,
+        letterSpacing: 2,
+      ),
+      decoration: _pillDecoration(
+        hint: hint,
+        prefix: const AuthFieldIcon(AuthIcons.pin),
+        suffix: AuthPinVisibilityButton(obscured: obscure, onPressed: onToggle),
+      ),
+      validator: validator,
+    );
+  }
+
+  Widget _primaryButton() {
+    final labels = ['Send OTP', 'Verify OTP', 'Reset MPIN'];
+
+    return SizedBox(
+      width: double.infinity,
+      height: 54,
+      child: ElevatedButton(
+        onPressed: _loading ? null : _onPrimaryPressed,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: primaryBlue,
+          foregroundColor: Colors.white,
+          disabledBackgroundColor: Colors.grey.shade400,
+          elevation: 4,
+          shadowColor: const Color.fromRGBO(9, 44, 86, 0.35),
+          shape: const StadiumBorder(),
+        ),
+        child: _loading
+            ? const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(
+                  color: Colors.white,
+                  strokeWidth: 2.5,
+                ),
+              )
+            : Text(
+                labels[_step],
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.4,
+                ),
+              ),
+      ),
+    );
+  }
+
+  Widget _linkText({
+    required String lead,
+    required String action,
+    required VoidCallback? onTap,
+  }) {
+    return Center(
+      child: GestureDetector(
+        onTap: onTap,
+        child: Text.rich(
+          TextSpan(
+            style: const TextStyle(fontSize: 13, color: mutedColor),
+            children: [
+              TextSpan(text: '$lead '),
+              TextSpan(
+                text: action,
+                style: const TextStyle(
+                  color: primaryBlue,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _resendRow() {
+    final canResend = _resendSeconds <= 0 && !_loading;
+
+    return Align(
+      alignment: Alignment.centerRight,
+      child: GestureDetector(
+        onTap: canResend ? () => _sendOtp(resend: true) : null,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+          child: Text(
+            _resendSeconds > 0 ? 'Resend in ${_resendSeconds}s' : 'Resend code',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: canResend ? accentBlue : mutedColor,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _stepContent() {
+    switch (_step) {
+      case 0:
+        return [
+          _sheetTitle('Your phone'),
+          const SizedBox(height: 22),
+          _phoneField(),
+          const SizedBox(height: 20),
+          _primaryButton(),
+          const SizedBox(height: 22),
+          _linkText(
+            lead: 'Remembered it?',
+            action: 'Back to login',
+            onTap: _loading ? null : () => Navigator.pop(context),
+          ),
+        ];
+      case 1:
+        return [
+          _sheetTitle('Verification'),
+          const SizedBox(height: 22),
+          _otpField(),
+          const SizedBox(height: 6),
+          _resendRow(),
+          const SizedBox(height: 14),
+          _primaryButton(),
+          const SizedBox(height: 22),
+          _linkText(
+            lead: 'Wrong number?',
+            action: 'Change it',
+            onTap: _loading ? null : _onBack,
+          ),
+        ];
+      default:
+        return [
+          _sheetTitle('New MPIN'),
+          const SizedBox(height: 22),
+          _mpinField(
+            controller: _newMpinController,
+            hint: 'New 6-digit MPIN',
+            obscure: _obscureNew,
+            onToggle: () => setState(() => _obscureNew = !_obscureNew),
+            validator: (v) {
+              if (v == null || v.isEmpty) return 'MPIN is required';
+              if (!RegExp(r'^\d{6}$').hasMatch(v)) {
+                return 'MPIN must be exactly 6 digits';
+              }
+              return null;
+            },
+          ),
+          const SizedBox(height: 14),
+          _mpinField(
+            controller: _confirmMpinController,
+            hint: 'Confirm new MPIN',
+            obscure: _obscureConfirm,
+            onToggle: () => setState(() => _obscureConfirm = !_obscureConfirm),
+            validator: (v) {
+              if (v == null || v.isEmpty) return 'Confirm your new MPIN';
+              if (v != _newMpinController.text) return 'MPINs do not match';
+              return null;
+            },
+          ),
+          const SizedBox(height: 20),
+          _primaryButton(),
+        ];
+    }
+  }
+
+  Widget _sheetTitle(String text) {
+    return Text(
+      text,
+      style: const TextStyle(
+        fontSize: 28,
+        fontWeight: FontWeight.w800,
+        color: primaryBlue,
+      ),
+    );
+  }
+
+  // ─── Build ─────────────────────────────────────────────────────────────────
+
+  @override
+  Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+
+    final heroHeight = media.padding.top + 260;
+    final sheetTop = heroHeight - 40;
+
+    return PopScope(
+      canPop: _step == 0 && !_loading,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _onBack();
+      },
+      child: AnnotatedRegion<SystemUiOverlayStyle>(
+        value: SystemUiOverlayStyle.light,
+        child: Scaffold(
+          resizeToAvoidBottomInset: true,
+          backgroundColor: sheetColor,
+          body: SingleChildScrollView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            child: Stack(
+              children: [
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  height: heroHeight,
+                  child: _hero(heroHeight, media.padding.top),
+                ),
+
+                // Rounded sheet with the form.
+                Padding(
+                  padding: EdgeInsets.only(top: sheetTop),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      minHeight: media.size.height - sheetTop,
+                    ),
+                    child: Container(
+                      width: double.infinity,
+                      padding: EdgeInsets.fromLTRB(
+                        26,
+                        26,
+                        26,
+                        24 + media.padding.bottom,
+                      ),
+                      decoration: const BoxDecoration(
+                        color: sheetColor,
+                        borderRadius: BorderRadius.vertical(
+                          top: Radius.circular(36),
+                        ),
+                      ),
+                      child: Form(
+                        key: _formKey,
+                        autovalidateMode: _autoValidate
+                            ? AutovalidateMode.onUserInteraction
+                            : AutovalidateMode.disabled,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _stepBar(),
+                            const SizedBox(height: 22),
+                            ..._stepContent(),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );

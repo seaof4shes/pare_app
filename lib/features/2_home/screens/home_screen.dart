@@ -151,7 +151,7 @@ class HomeScreenState extends State<HomeScreen>
   // ============================================================
 
   Future<void> _checkForUpdates() async {
-    debugPrint('🔍 Home: Checking for P.A.R.E. updates...');
+    debugPrint('🔍 Home: Checking for PARE updates...');
 
     try {
       final updateService = AppUpdateService();
@@ -159,6 +159,15 @@ class HomeScreenState extends State<HomeScreen>
       final result = await updateService.checkForUpdates();
 
       if (result['success'] != true) {
+        if (!mounted) return;
+        setState(() {
+          _installedAppVersion =
+              result['installedAppVersion']?.toString() ?? _installedAppVersion;
+          _latestAppVersion = '';
+          _appUpdateAvailable = false;
+          _updateAvailable = false;
+        });
+        PareUpdateStatus.instance.available.value = false;
         debugPrint('⚠️ Home update check was unsuccessful.');
         debugPrint('⚠️ Error: ${result['error']}');
         return;
@@ -167,7 +176,7 @@ class HomeScreenState extends State<HomeScreen>
       if (!mounted) return;
 
       setState(() {
-        _updateAvailable = result['anyUpdateAvailable'] == true;
+        _updateAvailable = result['appUpdateAvailable'] == true;
 
         _appUpdateAvailable = result['appUpdateAvailable'] == true;
 
@@ -622,7 +631,7 @@ class HomeScreenState extends State<HomeScreen>
   }
 
   // ============================================================
-  // P.A.R.E. POPUP HELPERS
+  // PARE POPUP HELPERS
   // ============================================================
 
   Dialog _pareDialogShell({
@@ -794,7 +803,7 @@ class HomeScreenState extends State<HomeScreen>
   }
 
   // ============================================================
-  // P.A.R.E. ALERT POPUP
+  // PARE ALERT POPUP
   // ============================================================
 
   Future<void> _showPAREAlert({
@@ -941,7 +950,7 @@ class HomeScreenState extends State<HomeScreen>
               "or send money based only on "
               "this voice."
         : isUnknown
-        ? "P.A.R.E. could not make a clear "
+        ? "PARE could not make a clear "
               "determination. Try a longer "
               "or clearer audio sample."
         : "No strong signs of AI-generated "
@@ -1188,7 +1197,7 @@ class HomeScreenState extends State<HomeScreen>
         await _showPAREAlert(
           title: "Allow access to turn on protection",
           message:
-              "P.A.R.E. needs the required "
+              "PARE needs the required "
               "permissions to activate its "
               "protection features. You can "
               "enable them in your device settings.",
@@ -1292,7 +1301,7 @@ class HomeScreenState extends State<HomeScreen>
         await _showPAREAlert(
           title: "Voice Detection Failed",
           message:
-              "P.A.R.E. was unable to analyze "
+              "PARE was unable to analyze "
               "the recorded sample. Please try again.",
           icon: Icons.error_outline,
           iconColor: dangerColor,
@@ -1326,7 +1335,7 @@ class HomeScreenState extends State<HomeScreen>
       await _showPAREAlert(
         title: "Voice Analysis Failed",
         message:
-            "P.A.R.E. was unable to analyze "
+            "PARE was unable to analyze "
             "the recorded sample. Please try again.",
         icon: Icons.error_outline,
         iconColor: dangerColor,
@@ -1442,7 +1451,7 @@ class HomeScreenState extends State<HomeScreen>
           await _showPAREAlert(
             title: "Analysis Unavailable",
             message:
-                "P.A.R.E. could not determine "
+                "PARE could not determine "
                 "a result for the uploaded audio.",
             icon: Icons.help_outline,
             iconColor: primaryBlue,
@@ -1477,7 +1486,7 @@ class HomeScreenState extends State<HomeScreen>
         await _showPAREAlert(
           title: "Voice Analysis Failed",
           message:
-              "P.A.R.E. was unable to analyze "
+              "PARE was unable to analyze "
               "the selected audio file. Please "
               "try another file or try again.",
           icon: Icons.error_outline,
@@ -1493,7 +1502,7 @@ class HomeScreenState extends State<HomeScreen>
       await _showPAREAlert(
         title: "Unable to Open Audio",
         message:
-            "P.A.R.E. could not open the audio "
+            "PARE could not open the audio "
             "file picker. Please try again.",
         icon: Icons.folder_off_outlined,
         iconColor: dangerColor,
@@ -1513,7 +1522,7 @@ class HomeScreenState extends State<HomeScreen>
 
   Widget _header() {
     return PareHeader(
-      title: 'Home',
+      title: 'PARE',
       subtitle: 'Hello, $_username',
       username: _username,
     );
@@ -1729,6 +1738,8 @@ class HomeScreenState extends State<HomeScreen>
         ),
       ),
       child: Stack(
+        fit: StackFit.passthrough,
+        alignment: Alignment.topCenter,
         children: [
           const Positioned(
             right: -80,
@@ -1805,6 +1816,7 @@ class HomeScreenState extends State<HomeScreen>
 
               Text(
                 title,
+                textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: Colors.white,
                   fontSize: 19,
@@ -2050,7 +2062,7 @@ class HomeScreenState extends State<HomeScreen>
       children: [
         _hero(),
 
-        _sectionLabel('When active, P.A.R.E. will'),
+        _sectionLabel('When active, PARE will'),
 
         _rowsCard([
           _infoRow(

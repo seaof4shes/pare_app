@@ -41,6 +41,15 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    // Direct APK downloads benefit from compressed native libraries.
+    // Android extracts them during installation; this saves download bytes,
+    // not the same amount of installed storage.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 flutter {

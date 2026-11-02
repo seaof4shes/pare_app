@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:pare_app/core/theme/pare_brand.dart';
 import 'package:flutter/services.dart';
 import 'package:pare_app/core/security/private_preferences.dart';
 
@@ -152,31 +153,23 @@ class _SplashScreenState extends State<SplashScreen>
                           end: 1,
                         ).animate(_introCurve),
                         child: Column(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
-                            Container(
-                              width: 72,
-                              height: 72,
-                              decoration: BoxDecoration(
-                                color: Colors.white.withValues(alpha: 0.14),
-                                borderRadius: BorderRadius.circular(20),
-                                border: Border.all(
-                                  color: Colors.white.withValues(alpha: 0.30),
-                                ),
-                              ),
-                              child: const Icon(
-                                Icons.shield_outlined,
-                                color: Colors.white,
-                                size: 38,
-                              ),
+                            Image.asset(
+                              PareBrand.logoAsset,
+                              width: 180,
+                              height: 180,
+                              fit: BoxFit.contain,
+                              semanticLabel: 'PARE logo',
                             ),
                             const SizedBox(height: 14),
                             const Text(
-                              'P.A.R.E',
+                              PareBrand.name,
                               style: TextStyle(
                                 color: Colors.white,
-                                fontSize: 36,
-                                fontWeight: FontWeight.w900,
-                                letterSpacing: 2.5,
+                                fontSize: 30,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 2,
                               ),
                             ),
                           ],

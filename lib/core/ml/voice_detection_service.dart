@@ -15,7 +15,6 @@ import 'voice_mfcc_extractor.dart';
 class VoiceDetectionService {
   Interpreter? _interpreter;
   int? _loadedVersion;
-  FlexDelegate? _flexDelegate;
   Future<void>? _loading;
 
   // ── Thresholds ────────────────────────────────────────────────────────────
@@ -29,21 +28,9 @@ class VoiceDetectionService {
 
   static const bool _debugMode = true;
 
-  // ── Model versions ───────────────────────────────────────────────────────
-  //
-  // V4 is the bundled/default model.
-  //
-  // If a newer model has been downloaded through the updater, the downloaded
-  // model will be loaded instead.
-  //
-  // This allows:
-  //
-  //   Fresh install → V4 bundled model
-  //   Updated model → V5 local downloaded model
-  //
-  static const int _defaultModelVersion = 4;
+  static const int _defaultModelVersion = 6;
   static const String _defaultModelAsset =
-      'assets/models/voice_model_v4.tflite';
+      'assets/models/voice_model_v6.tflite';
 
   // ─────────────────────────────────────────────────────────────────────────
   // MODEL
@@ -79,13 +66,6 @@ class VoiceDetectionService {
     String modelSource;
     bool usingDownloadedModel = false;
 
-    /*
-     * If a downloaded model exists locally, use it.
-     *
-     * This is what allows the Voice Model Update feature to replace the
-     * bundled V4 model with a downloaded V5 model without changing the
-     * actual voice-analysis pipeline.
-     */
     if (installedVersion > _defaultModelVersion &&
         await File(downloadedModelPath).exists()) {
       modelSource = downloadedModelPath;
@@ -94,7 +74,7 @@ class VoiceDetectionService {
       /*
        * No newer downloaded model exists.
        *
-       * Use the bundled V4 model as the fallback.
+       * Use the bundled V6 model as the fallback.
        */
       modelSource = _defaultModelAsset;
     }
@@ -111,8 +91,7 @@ class VoiceDetectionService {
       log('════════════════════════════════════');
     }
 
-    final delegate = await FlexDelegate.create();
-    final options = InterpreterOptions()..addDelegate(delegate);
+    final options = InterpreterOptions();
     Interpreter? candidate;
     try {
       if (usingDownloadedModel) {
@@ -132,14 +111,12 @@ class VoiceDetectionService {
       _validateVoice(candidate);
       close();
       _interpreter = candidate;
-      _flexDelegate = delegate;
       _loadedVersion = usingDownloadedModel
           ? installedVersion
           : _defaultModelVersion;
       await prefs.setInt('voice_model_version', _loadedVersion!);
     } catch (_) {
       candidate?.close();
-      delegate.delete();
       rethrow;
     }
 
@@ -176,7 +153,6 @@ class VoiceDetectionService {
     required int modelVersion,
   }) async {
     Interpreter? candidate;
-    FlexDelegate? delegate;
     try {
       final prefs = await PrivatePreferences.getInstance();
       final installed =
@@ -184,8 +160,7 @@ class VoiceDetectionService {
       if (modelVersion <= installed || modelVersion <= _defaultModelVersion) {
         return false;
       }
-      delegate = await FlexDelegate.create();
-      final options = InterpreterOptions()..addDelegate(delegate);
+      final options = InterpreterOptions();
       candidate = Interpreter.fromFile(File(modelPath), options: options);
       _validateVoice(candidate);
       final dir = await getApplicationDocumentsDirectory();
@@ -201,7 +176,6 @@ class VoiceDetectionService {
       return false;
     } finally {
       candidate?.close();
-      delegate?.delete();
     }
   }
 
@@ -582,9 +556,6 @@ class VoiceDetectionService {
   void close() {
     _interpreter?.close();
     _interpreter = null;
-
-    _flexDelegate?.delete();
-    _flexDelegate = null;
   }
 }
 

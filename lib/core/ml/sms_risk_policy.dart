@@ -25,17 +25,16 @@ class SmsRiskPolicy {
     final text = message.toLowerCase().replaceAll(RegExp('[’‘]'), "'");
     bool has(String pattern) => RegExp(pattern).hasMatch(text);
 
-    // Remove only explicit safety instructions from credential-request checks.
-    // Keep the rest: a scam can include a safety disclaimer and still ask for OTP.
     final requests = text.replaceAll(
       RegExp(
         r"\b(?:do not|don't|never|huwag|wag)\s+(?:ever\s+)?(?:share|send|give|provide|disclose|ibigay|ipadala)\s+(?:your\s+|ang\s+)?(?:otp|password|pin|verification code|one[ -]time password)\b(?:\s+(?:or|and)\s+(?:password|pin|otp)\b)?",
       ),
       ' ',
     );
-    final credentialRequest = RegExp(
-      r'\b(?:share|send|give|provide|tell|reply|submit|enter|input|disclose|ibigay|ipadala|ilagay)\b[^.!?;\n]{0,65}\b(?:otp|one[ -]time (?:password|pin|code)|password|pin|verification code|security code)\b',
-    ).hasMatch(requests);
+    final credentialMatch = RegExp(
+      r'\b(?:share|send|give|provide|tell|reply|submit|enter|input|disclose|ibigay|ipadala|ilagay)\b[^.!?;\n]{0,65}\b(otp|one[ -]time (?:password|pin|code)|password|pin|verification code|security code)\b',
+    ).firstMatch(requests);
+    final credentialRequest = credentialMatch != null;
     final discloseCredential = RegExp(
       r'\b(?:share|send|give|provide|tell|reply|disclose|ibigay|ipadala)\b[^.!?;\n]{0,65}\b(?:otp|one[ -]time (?:password|pin|code)|password|pin|verification code|security code)\b',
     ).hasMatch(requests);
@@ -48,40 +47,79 @@ class SmsRiskPolicy {
     final threat = has(
       r'\b(?:suspend(?:ed)?|restrict(?:ed)?|locked|frozen|deactivat(?:e|ed|ion)|final warning)\b',
     );
-    final urgency = has(
+    final urgencyMatch = RegExp(
       r'\b(?:urgent|immediately|act now|within \d+ hours?)\b',
-    );
+    ).firstMatch(text);
+    final urgency = urgencyMatch != null;
     final prize = has(
       r'\b(?:prize|winner|you (?:have )?won|nanalo|panalo|premyo)\b',
     );
     final payment = has(
       r'\b(?:send money|transfer money|pay now|payment required|processing fee|claim fee|advance fee|magbayad)\b',
     );
-    final personalData = RegExp(
-      r'\b(?:send|submit|provide|enter)\b.{0,50}\b(?:personal information|account number|card number|cvv)\b',
-    ).hasMatch(requests);
+    final personalMatch = RegExp(
+      r'\b(?:send|submit|provide|enter)\b.{0,50}\b(personal information|account number|card number|cvv)\b',
+    ).firstMatch(requests);
+    final personalData = personalMatch != null;
 
     final reasons = <String>[];
+    final signals = <String>[];
+    void reason(String signal, String detail) {
+      signals.add(signal);
+      reasons.add(detail);
+    }
+
     if (credentialRequest) {
-      reasons.add('Requests a password, PIN, OTP, or verification code.');
+      final credential = credentialMatch.group(1)!.toUpperCase();
+      reason(
+        'asks for your $credential',
+        'Sensitive code or password request: asks you to share or enter your $credential. Giving it to someone else can let them access your account or authorize a transaction.',
+      );
     }
     if (link && accountAction) {
-      reasons.add('Combines an account verification request with a web link.');
+      reason(
+        'asks for account verification through a link',
+        'Account action with a link: asks you to verify, confirm or update account details and includes a web address. This combination can lead you to a fake sign-in page; the link has not been verified as malicious.',
+      );
     }
     if (threat && (accountAction || link)) {
-      reasons.add(
-        'Uses an account restriction or suspension threat with a requested action.',
+      reason(
+        'threatens account access unless you act',
+        'Account threat: mentions a restriction, suspension or similar warning together with an account action or link. This can pressure you into acting without checking the sender.',
       );
     }
     if (prize && payment) {
-      reasons.add('Requests payment in connection with a prize.');
+      reason(
+        'asks for payment to claim a prize',
+        'Prize payment: combines a prize or winning claim with a payment or fee. Paying to receive a supposed prize is a strong scam warning sign.',
+      );
+    } else if (prize && personalData) {
+      reason(
+        'links a prize to a request for personal details',
+        'Prize and personal details: combines a winning claim with a request for personal or financial information. The offer may be used to collect your details.',
+      );
     }
     if (personalData) {
-      reasons.add('Requests personal or financial information.');
+      final information = personalMatch.group(1)!;
+      reason(
+        'requests your $information',
+        'Personal or financial details: asks you to send, submit, provide or enter your $information. These details may be misused if the sender is not genuine.',
+      );
     }
     if (payment && link) {
-      reasons.add('Combines a payment request with a web link.');
+      reason(
+        'combines a payment request with a link',
+        'Payment with a link: asks for money or a fee and includes a web address. Confirm the request independently before paying.',
+      );
     }
+    if (urgency && (accountAction || payment || credentialRequest)) {
+      reason(
+        'pressures you to act quickly',
+        'Urgency: uses "${urgencyMatch.group(0)}" alongside an account action, payment or code/password request. The pressure to act quickly adds to the risk; urgency alone does not establish a scam.',
+      );
+    }
+    String detailed(String level, String advice) =>
+        '$level: ${signals.take(3).join('; ')}.\n\nDetected signs:\n${reasons.map((r) => '• $r').join('\n\n')}\n\n$advice';
     var evidence = 0;
     if (credentialRequest) evidence += 6;
     if (link && accountAction) evidence += 4;
@@ -105,7 +143,10 @@ class SmsRiskPolicy {
         'HIGH',
         evidence.clamp(0, 20),
         probability,
-        '${reasons.join(' ')} Do not send codes or money; verify through an independently obtained contact.',
+        detailed(
+          'High risk',
+          'These harmful-request patterns triggered a high-risk warning. Do not share codes or send money. Verify through a contact you obtain independently, not one supplied in this message.',
+        ),
       );
     }
     if (evidence >= 3 ||
@@ -116,18 +157,20 @@ class SmsRiskPolicy {
         evidence.clamp(0, 20),
         probability,
         reasons.isEmpty
-            ? 'The model detected patterns associated with spam or scams, but no strong harmful request was identified. Verify the message before acting.'
-            : '${reasons.join(' ')} Verify the request before acting.',
+            ? 'Needs review: the model flagged this message, but no specific harmful request was identified.\n\nThe model found patterns associated with spam or scams. This is a model-based warning, not proof that a particular phrase or sender is fraudulent. Confirm the message through an official contact before acting.'
+            : detailed(
+                'Needs review',
+                'These signs require caution, but did not meet the high-risk decision rules. Confirm the sender and purpose before sharing information, opening links or making a payment.',
+              ),
       );
     }
-    // A link, brand, survey, promotion, or an unreliable model score alone
-    // cannot establish phishing. No survey/brand is explicitly allowlisted.
+
     return SmsRiskAssessment(
       'Legit',
       'LOW',
       evidence,
       probability,
-      'No strong suspicious request was detected. This does not verify the sender or guarantee that the message is safe.',
+      'Low risk: no strong suspicious request was detected.\n\nThe message did not meet the high-risk or review conditions in the current checks. Low risk does not verify the sender or guarantee safety. A familiar brand or survey format is not proof of legitimacy; verify any unexpected request before acting.',
     );
   }
 }

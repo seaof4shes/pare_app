@@ -59,7 +59,7 @@ Future<void> main() async {
                     const Icon(Icons.lock_outline, size: 40),
                     const SizedBox(height: 16),
                     const Text(
-                      'P.A.R.E. could not open protected data. Your records have not been deleted. Close and reopen the app to retry.',
+                      'PARE could not open protected data. Your records have not been deleted. Close and reopen the app to retry.',
                       textAlign: TextAlign.center,
                     ),
                   ],
@@ -80,6 +80,7 @@ class PAREApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
+      title: 'PARE',
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF092C56)),

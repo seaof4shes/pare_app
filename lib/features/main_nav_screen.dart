@@ -81,7 +81,7 @@ class _MainNavScreenState extends State<MainNavScreen>
   }
 
   Future<void> _checkForUpdates() async {
-    debugPrint('🔍 Starting P.A.R.E. update comparison...');
+    debugPrint('🔍 Starting PARE update comparison...');
 
     try {
       final updateService = AppUpdateService();

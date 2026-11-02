@@ -12,8 +12,8 @@ class AppUpdateService {
   // Must match the key used by SmsDetectionService.
 
   // Current bundled/default voice model.
-  // Keep this at 4 until the voice-model update system is implemented.
-  static const int defaultVoiceModelVersion = 4;
+  // V6 is the built-in-only re-export of the V4 weights.
+  static const int defaultVoiceModelVersion = 6;
 
   /// Gets the latest update information from Firestore.
   Future<Map<String, dynamic>?> getLatestUpdate() async {
@@ -50,7 +50,7 @@ class AppUpdateService {
     }
   }
 
-  /// Compares the installed P.A.R.E. application and model versions
+  /// Compares the installed PARE application and model versions
   /// against the latest versions stored in Firestore.
   Future<Map<String, dynamic>> checkForUpdates() => _pendingCheck ??=
       _checkForUpdates().whenComplete(() => _pendingCheck = null);
@@ -102,7 +102,7 @@ class AppUpdateService {
       // in SharedPreferences after a successful model update.
       //
       // If no downloaded voice model has ever been installed, the
-      // bundled/default voice model is Version 4.
+      // bundled/default voice model is Version 6.
       // ------------------------------------------------------------
       final voiceService = VoiceDetectionService();
       final installedVoiceModelVersion = await voiceService

@@ -50,8 +50,9 @@ void main() {
       expect(reminder.riskLevel, 'LOW');
       final otp = await sms.predict('Send your OTP to our agent.');
       expect(otp.riskLevel, 'HIGH');
-      // Exercises Android Flex loading, tensor compatibility and an inference.
+      // Exercises the built-in-only voice runtime without TensorFlow Flex.
       await voice.loadModel();
+      expect(await voice.getInstalledModelVersion(), greaterThanOrEqualTo(6));
       final temp = await getTemporaryDirectory();
       final sample = File('${temp.path}/pare_model_smoke_fixture.wav');
       try {

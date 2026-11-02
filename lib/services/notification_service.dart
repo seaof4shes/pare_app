@@ -1,10 +1,48 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:pare_app/core/theme/pare_brand.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:pare_app/core/security/private_preferences.dart';
 
 class NotificationService {
+  static Future<ByteArrayAndroidBitmap?>? _largeIcon;
+
+  // Android small icons must be monochrome. The notification's large icon
+  // uses the exact same full-color asset as the splash/launcher, scaled to
+  // avoid transferring the full-resolution image through the platform channel.
+  static Future<ByteArrayAndroidBitmap?> _loadLargeIcon() async {
+    try {
+      final bytes = await rootBundle.load(PareBrand.logoAsset);
+      final codec = await ui.instantiateImageCodec(
+        bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes),
+        targetWidth: 128,
+      );
+      try {
+        final frame = await codec.getNextFrame();
+        try {
+          final png = await frame.image.toByteData(
+            format: ui.ImageByteFormat.png,
+          );
+          return png == null
+              ? null
+              : ByteArrayAndroidBitmap(
+                  png.buffer.asUint8List(png.offsetInBytes, png.lengthInBytes),
+                );
+        } finally {
+          frame.image.dispose();
+        }
+      } finally {
+        codec.dispose();
+      }
+    } catch (_) {
+      // A branding asset failure must never suppress a scam warning.
+      return null;
+    }
+  }
+
   static final FlutterLocalNotificationsPlugin _notifications =
       FlutterLocalNotificationsPlugin();
 
@@ -20,7 +58,7 @@ class NotificationService {
 
   static Future<void> init() async {
     const AndroidInitializationSettings androidSettings =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
+        AndroidInitializationSettings('@drawable/ic_stat_pare');
 
     const InitializationSettings settings = InitializationSettings(
       android: androidSettings,
@@ -71,6 +109,7 @@ class NotificationService {
     required String message,
     required String payload,
     required String riskLevel,
+    String? detectionSummary,
   }) async {
     final allowed = await _notifications
         .resolvePlatformSpecificImplementation<
@@ -95,6 +134,8 @@ class NotificationService {
       playSound: soundEnabled,
       enableVibration: vibrateEnabled,
       visibility: NotificationVisibility.private,
+      icon: 'ic_stat_pare',
+      largeIcon: await (_largeIcon ??= _loadLargeIcon()),
     );
 
     final details = NotificationDetails(android: androidDetails);
@@ -103,7 +144,9 @@ class NotificationService {
 
     final title = isHighRisk ? '⚠️ SCAM ALERT' : '⚠️ BE CAREFUL';
 
-    final body = isHighRisk
+    final body = detectionSummary != null && detectionSummary.trim().isNotEmpty
+        ? '$detectionSummary\nTap to read the detected signs and safety advice.'
+        : isHighRisk
         ? 'This message may be dangerous.\n'
               'Do NOT click links or share information.'
         : 'This message looks suspicious.\n'

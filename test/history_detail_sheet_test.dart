@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:pare_app/core/ml/sms_risk_policy.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pare_app/features/3_history/widgets/history_detail_sheet.dart';
@@ -85,7 +86,7 @@ void main() {
       tester.getTopLeft(find.text('Message')).dy,
       lessThan(tester.getTopLeft(find.text('Why this result?')).dy),
     );
-    final actionLabel = tester.getRect(find.text('What P.A.R.E. did?'));
+    final actionLabel = tester.getRect(find.text('What PARE did?'));
     final actionValue = tester.getRect(find.text('Allowed'));
     expect(actionValue.left, greaterThan(actionLabel.right));
     expect((actionValue.center.dy - actionLabel.center.dy).abs(), lessThan(2));
@@ -118,6 +119,32 @@ void main() {
     expect(find.text('SMS model v4'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'Specific SMS summary is visible before the message and full evidence remains readable',
+    (tester) async {
+      final assessment = SmsRiskPolicy.assess(
+        'Send your OTP immediately.',
+        0.1,
+      );
+      final item = record('HIGH')
+        ..['detectionExplanation'] = assessment.explanation;
+      await open(tester, item);
+      final headline = assessment.explanation.split('\n\n').first;
+      expect(find.text(headline), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text(headline)).dy,
+        lessThan(tester.getTopLeft(find.text('Message')).dy),
+      );
+      await tester.scrollUntilVisible(
+        find.text(assessment.explanation),
+        150,
+        scrollable: find.byType(Scrollable).last,
+      );
+      expect(find.text(assessment.explanation), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('High-risk sender action is pinned and closes details first', (
     tester,
