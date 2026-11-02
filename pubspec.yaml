@@ -2,7 +2,7 @@ name: pare_app
 description: "A new Flutter project."
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 1.0.6+7
 
 environment:
   sdk: ^3.11.5
@@ -33,12 +33,15 @@ dependencies:
   sqflite: ^2.4.1
   path: ^1.9.1
   crypto: ^3.0.6
+  pointycastle: ^3.9.1
   flutter_secure_storage: ^9.2.2
   record: ^6.2.0
   path_provider: ^2.1.5
   file_picker: ^11.0.3
 
 dev_dependencies:
+  integration_test:
+    sdk: flutter
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
@@ -49,6 +52,7 @@ flutter:
 
   assets:
     - assets/models/sms_scam_model.tflite
+    - assets/models/sms_manifest.json
     - assets/models/vocab.json
     - assets/models/voice_model.tflite
     - assets/models/voice_model_v4.tflite

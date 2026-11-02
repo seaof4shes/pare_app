@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:phone_state/phone_state.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:pare_app/core/security/private_preferences.dart';
 import 'package:pare_app/core/ml/call_analysis_service.dart';
 
 class CallDetectionService {
@@ -38,7 +38,7 @@ class CallDetectionService {
 
       if (number != null) _lastNumber = number;
 
-      debugPrint("📞 Phone state: $status, number: $number");
+      debugPrint("📞 Phone state: $status");
 
       if (status == PhoneStateStatus.CALL_STARTED &&
           !_hasAnalyzedCurrentCall &&
@@ -50,7 +50,6 @@ class CallDetectionService {
       if (status == PhoneStateStatus.CALL_ENDED) {
         debugPrint("📞 Call ended. Ready for next call.");
         _hasAnalyzedCurrentCall = false;
-        _isDetecting = false;
         _lastNumber = null;
         _lastStatus = null;
       }
@@ -63,7 +62,6 @@ class CallDetectionService {
     await _phoneSub?.cancel();
     _phoneSub = null;
 
-    _isDetecting = false;
     _hasAnalyzedCurrentCall = false;
     _lastNumber = null;
     _lastStatus = null;
@@ -127,7 +125,7 @@ class CallDetectionService {
   Future<void> _handleIncomingCall(String? phoneNumber) async {
     if (_isDetecting) return;
 
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await PrivatePreferences.getInstance();
     final isActivated = prefs.getBool('protection_activated') ?? false;
     final callDetectionEnabled = prefs.getBool('call_detection') ?? true;
 
@@ -139,7 +137,7 @@ class CallDetectionService {
       final callerNumber = phoneNumber ?? 'Unknown Number';
       final callerName = await _getCallerName(phoneNumber);
 
-      debugPrint('📞 Incoming call detected: $callerName ($callerNumber)');
+      debugPrint('Incoming call detected');
       debugPrint('🔍 Starting automatic call detection...');
 
       await Future.delayed(const Duration(seconds: 5));
@@ -211,7 +209,7 @@ class CallDetectionService {
     try {
       final resolvedName = fileName ?? filePath.split('/').last;
 
-      debugPrint('📁 Starting uploaded audio analysis: $resolvedName');
+      debugPrint('📁 Starting uploaded audio analysis');
 
       final result = await _callAnalysisService.analyzeUploadedFile(
         filePath,

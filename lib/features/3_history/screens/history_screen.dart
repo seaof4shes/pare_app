@@ -1,9 +1,11 @@
+import '../widgets/history_detail_sheet.dart';
+import '../widgets/history_presentation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:pare_app/core/security/private_preferences.dart';
 
 import 'package:pare_app/core/database/database_helper.dart';
-import 'package:pare_app/core/security/local_crypto_service.dart';
+import 'package:pare_app/features/widgets/pare_shell.dart';
 
 class HistoryScreen extends StatefulWidget {
   final int? openHistoryId;
@@ -19,14 +21,14 @@ class _HistoryScreenState extends State<HistoryScreen>
   int selectedFilter = 0;
 
   // ---------------------------------------------------------------------
-  // Design tokens — mirrored from HomeScreen so both screens read as one
-  // cohesive design system.
+  // Design tokens — shared with the other screens.
   // ---------------------------------------------------------------------
   static const Color primaryBlue = Color(0xFF092C56);
   static const Color accentBlue = Color(0xFF2A5298);
   static const Color backgroundColor = Color(0xFFF6F8FB);
   static const Color surfaceColor = Color(0xFFFFFFFF);
   static const Color borderColor = Color(0xFFE4E9F0);
+  static const Color segmentColor = Color(0xFFE9EEF5);
   static const Color inkColor = Color(0xFF10192B);
   static const Color mutedColor = Color(0xFF6B7686);
   static const Color successColor = Color(0xFF1C8756);
@@ -52,7 +54,7 @@ class _HistoryScreenState extends State<HistoryScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Nothing needed here for the block flow.
+    if (state == AppLifecycleState.resumed) _loadHistory();
   }
 
   @override
@@ -72,7 +74,7 @@ class _HistoryScreenState extends State<HistoryScreen>
   }
 
   Future<void> _loadUsername() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await PrivatePreferences.getInstance();
     final savedUsername = prefs.getString('username') ?? "Username";
 
     if (!mounted) return;
@@ -82,8 +84,32 @@ class _HistoryScreenState extends State<HistoryScreen>
     });
   }
 
+  bool _historyLoading = true;
+  String? _historyError;
   Future<void> _loadHistory() async {
-    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _historyLoading = true;
+        _historyError = null;
+      });
+    }
+    try {
+      await _loadHistoryRecords();
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          history = [];
+          _historyError =
+              'Protected history could not be opened. Sign in again or retry. Your stored records have not been deleted.';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _historyLoading = false);
+    }
+  }
+
+  Future<void> _loadHistoryRecords() async {
+    final prefs = await PrivatePreferences.getInstance();
     final currentPhone = prefs.getString('phone') ?? '';
 
     final loadedHistory = await DatabaseHelper.instance.getHistory(
@@ -92,19 +118,7 @@ class _HistoryScreenState extends State<HistoryScreen>
 
     if (!mounted) return;
 
-    final decryptedHistory = <Map<String, dynamic>>[];
-
-    for (final data in loadedHistory) {
-      final mutable = Map<String, dynamic>.from(data);
-
-      mutable['message'] = await LocalCryptoService.instance.decryptText(
-        mutable['message']?.toString() ?? '',
-      );
-
-      decryptedHistory.add(mutable);
-    }
-
-    final convertedHistory = decryptedHistory.map((data) {
+    final convertedHistory = loadedHistory.map((data) {
       final confidenceValue = ((data['confidence'] as num?)?.toDouble() ?? 0.0);
 
       final isAudio = (data['category'] ?? '') == 'Audio';
@@ -113,33 +127,8 @@ class _HistoryScreenState extends State<HistoryScreen>
           ? confidenceValue
           : confidenceValue * 100;
 
-      final storedAction = (data['action'] as String? ?? '').trim();
-
-      String action;
-
-      if (storedAction.isNotEmpty) {
-        action = storedAction;
-      } else if (confidencePercent >= 75) {
-        action = 'Blocked';
-      } else if (confidencePercent >= 40) {
-        action = 'Alert Shown';
-      } else {
-        action = 'Allowed';
-      }
-
-      final storedRisk = (data['riskLevel'] as String? ?? '').trim();
-
-      String riskLevel;
-
-      if (storedRisk.isNotEmpty) {
-        riskLevel = storedRisk;
-      } else if (confidencePercent >= 75) {
-        riskLevel = 'HIGH';
-      } else if (confidencePercent >= 40) {
-        riskLevel = 'MEDIUM';
-      } else {
-        riskLevel = 'LOW';
-      }
+      final action = historyActionLabel(data['action'] as String?);
+      final riskLevel = historyRiskLabel(data['riskLevel'] as String?);
 
       final keywordScore = data['keywordScore'] as int? ?? 0;
 
@@ -155,6 +144,9 @@ class _HistoryScreenState extends State<HistoryScreen>
         'confidence': '${confidencePercent.toStringAsFixed(2)}%',
         'riskLevel': riskLevel,
         'keywordScore': keywordScore,
+        'detectionExplanation': data['detectionExplanation'],
+        'modelScore': data['modelScore'],
+        'modelVersion': data['modelVersion'],
         'action': action,
         'category': data['category'] ?? 'Messages',
         'safe': data['safe'] == 1,
@@ -279,35 +271,16 @@ class _HistoryScreenState extends State<HistoryScreen>
     final historyId = item['id'] as int;
 
     try {
-      // Save that P.A.R.E. opened the messaging app
-      // for the user to manually block the sender.
-      await DatabaseHelper.instance.updateHistoryAction(
-        historyId: historyId,
-        action: 'Message Opened for Blocking',
-        userPhone: await _getCurrentPhone(),
-      );
-
-      await _loadHistory();
-
-      // Open the sender's SMS conversation.
+      // Record completion only after Android successfully opens Messages.
       await _blockChannel.invokeMethod('openSmsConversation', {
         'sender': senderNumber,
       });
-    } on PlatformException catch (e) {
-      debugPrint(
-        '❌ Block flow error: '
-        '${e.code} - ${e.message}',
+      await DatabaseHelper.instance.updateHistoryAction(
+        historyId: historyId,
+        action: 'Messages opened',
+        userPhone: await _getCurrentPhone(),
       );
-
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            e.message ?? 'Unable to open the messaging application.',
-          ),
-        ),
-      );
+      await _loadHistory();
     } catch (e) {
       debugPrint('❌ Unexpected block flow error: $e');
 
@@ -322,7 +295,7 @@ class _HistoryScreenState extends State<HistoryScreen>
   }
 
   Future<String> _getCurrentPhone() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await PrivatePreferences.getInstance();
     return prefs.getString('phone') ?? '';
   }
 
@@ -383,72 +356,13 @@ class _HistoryScreenState extends State<HistoryScreen>
 
   // ─── Shared UI pieces ────────────────────────────────────────────────────────
 
-  Widget _header() {
-    final initial = _username.isNotEmpty ? _username[0].toUpperCase() : "U";
-
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Row(
-          children: [
-            Container(
-              width: 42,
-              height: 42,
-              alignment: Alignment.center,
-              decoration: const BoxDecoration(
-                color: primaryBlue,
-                shape: BoxShape.circle,
-              ),
-              child: Text(
-                initial,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            const Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  "P.A.R.E",
-                  style: TextStyle(
-                    color: primaryBlue,
-                    fontSize: 22,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-                Text(
-                  "Protecting All Random Exchange",
-                  style: TextStyle(
-                    color: mutedColor,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-        SizedBox(
-          width: 40,
-          height: 40,
-          child: Image.asset('assets/icon/app_icon.png', fit: BoxFit.contain),
-        ),
-      ],
-    );
-  }
-
   Widget _card({required Widget child, EdgeInsets? padding}) {
     return Container(
       width: double.infinity,
       padding: padding ?? const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: surfaceColor,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(color: borderColor),
       ),
       child: child,
@@ -459,18 +373,16 @@ class _HistoryScreenState extends State<HistoryScreen>
     final color = tint ?? primaryBlue;
 
     return Container(
-      width: 34,
-      height: 34,
+      width: 36,
+      height: 36,
       alignment: Alignment.center,
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(11),
       ),
-      child: Icon(icon, size: 17, color: color),
+      child: Icon(icon, size: 18, color: color),
     );
   }
-
-  Widget _divider() => Divider(height: 1, thickness: 1, color: borderColor);
 
   // ─── Action badge ─────────────────────────────────────────────────────────────
 
@@ -495,14 +407,14 @@ class _HistoryScreenState extends State<HistoryScreen>
         icon = Icons.warning_amber_rounded;
         break;
 
-      case 'Sender Blocked':
+      case 'Messages opened':
         fg = successColor;
         icon = Icons.check_circle_rounded;
         break;
 
       default:
-        fg = successColor;
-        icon = Icons.check_circle_outline_rounded;
+        fg = mutedColor;
+        icon = Icons.info_outline_rounded;
     }
 
     return Container(
@@ -529,403 +441,17 @@ class _HistoryScreenState extends State<HistoryScreen>
     );
   }
 
-  // ─── Risk level badge ────────────────────────────────────────────────────────
-
-  Widget _riskBadge(String riskLevel) {
-    Color fg;
-    String label;
-
-    switch (riskLevel) {
-      case 'HIGH':
-        fg = dangerColor;
-        label = 'High Risk';
-        break;
-
-      case 'MEDIUM':
-        fg = warningColor;
-        label = 'Medium Risk';
-        break;
-
-      default:
-        fg = successColor;
-        label = 'Low Risk';
-    }
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: fg.withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: fg),
-      ),
-    );
-  }
-
-  // ─── Detail row ──────────────────────────────────────────────────────────────
-
-  Widget _detailRow(String label, Widget value) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 110,
-            child: Text(
-              label,
-              style: const TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: mutedColor,
-              ),
-            ),
-          ),
-          Expanded(child: value),
-        ],
-      ),
-    );
-  }
-
-  // ─── Bottom sheet ─────────────────────────────────────────────────────────────
-
   void _showMessageBottomSheet(
     BuildContext context,
     Map<String, dynamic> item,
   ) {
-    final double confidenceRaw = item['confidenceRaw'] as double;
-
-    final bool safe = item['safe'];
-
-    final int keywordScore = item['keywordScore'] as int? ?? 0;
-
-    // Audio uses "Confidence".
-    // SMS/Message detection uses "Detection Score".
-    final String scoreLabel = item['category'] == 'Audio'
-        ? 'Confidence'
-        : 'Detection Score';
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => DraggableScrollableSheet(
-        initialChildSize: 0.6,
-        minChildSize: 0.4,
-        maxChildSize: 0.92,
-        expand: false,
-        builder: (_, controller) => Container(
-          decoration: const BoxDecoration(
-            color: surfaceColor,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-          ),
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Drag handle
-              Center(
-                child: Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: borderColor,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 18),
-
-              // Sender / file row
-              Row(
-                children: [
-                  _iconBadge(
-                    item['category'] == 'Audio'
-                        ? Icons.mic_rounded
-                        : Icons.sms_rounded,
-                    tint: accentBlue,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          item['name'],
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w800,
-                            color: inkColor,
-                          ),
-                        ),
-                        Text(
-                          item['date'],
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: mutedColor,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-
-              const SizedBox(height: 16),
-
-              _divider(),
-
-              const SizedBox(height: 16),
-
-              // Scrollable content
-              Expanded(
-                child: SingleChildScrollView(
-                  controller: controller,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Message body
-                      const Text(
-                        'Message',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                          color: mutedColor,
-                          letterSpacing: 0.4,
-                        ),
-                      ),
-
-                      const SizedBox(height: 8),
-
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: backgroundColor,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: borderColor),
-                        ),
-                        child: Text(
-                          (item['message'] as String).isNotEmpty
-                              ? item['message']
-                              : '(No message content)',
-                          style: const TextStyle(
-                            fontSize: 14,
-                            color: inkColor,
-                            height: 1.6,
-                          ),
-                        ),
-                      ),
-
-                      const SizedBox(height: 20),
-
-                      // Detection details section
-                      const Text(
-                        'Detection Details',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                          color: mutedColor,
-                          letterSpacing: 0.4,
-                        ),
-                      ),
-
-                      const SizedBox(height: 12),
-
-                      _detailRow(
-                        'Result',
-                        Row(
-                          children: [
-                            Icon(
-                              safe
-                                  ? Icons.check_circle_outline
-                                  : Icons.warning_amber_rounded,
-                              size: 14,
-                              color: safe ? successColor : dangerColor,
-                            ),
-                            const SizedBox(width: 5),
-                            Expanded(
-                              child: Text(
-                                item['result'],
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w700,
-                                  color: safe ? successColor : dangerColor,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-
-                      _detailRow('Risk Level', _riskBadge(item['riskLevel'])),
-
-                      _detailRow('Action Taken', _actionBadge(item['action'])),
-
-                      // =====================================================
-                      // Audio = Confidence
-                      // SMS   = Detection Score
-                      // =====================================================
-                      _detailRow(
-                        scoreLabel,
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            ClipRRect(
-                              borderRadius: BorderRadius.circular(4),
-                              child: LinearProgressIndicator(
-                                value: confidenceRaw / 100,
-                                minHeight: 7,
-                                backgroundColor: borderColor,
-                                valueColor: AlwaysStoppedAnimation<Color>(
-                                  _confidenceColor(confidenceRaw, safe),
-                                ),
-                              ),
-                            ),
-
-                            const SizedBox(height: 4),
-
-                            Text(
-                              item['confidence'],
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                                color: _confidenceColor(confidenceRaw, safe),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-
-                      // Keyword Score is mainly meaningful for SMS.
-                      if (item['category'] != 'Audio')
-                        _detailRow(
-                          'Keyword Score',
-                          Text(
-                            '$keywordScore '
-                            '${keywordScore == 1 ? 'point' : 'points'}',
-                            style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: inkColor,
-                            ),
-                          ),
-                        ),
-
-                      _detailRow(
-                        'Type',
-                        Text(
-                          item['type'],
-                          style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: inkColor,
-                          ),
-                        ),
-                      ),
-
-                      if (item['category'] == 'Messages' &&
-                          item['riskLevel'] == 'HIGH') ...[
-                        const SizedBox(height: 12),
-
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(14),
-                          decoration: BoxDecoration(
-                            color: dangerColor.withValues(alpha: 0.06),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: dangerColor.withValues(alpha: 0.25),
-                            ),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Row(
-                                children: [
-                                  Icon(
-                                    Icons.warning_amber_rounded,
-                                    color: dangerColor,
-                                    size: 20,
-                                  ),
-                                  SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      'High-Risk Message',
-                                      style: TextStyle(
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.w800,
-                                        color: dangerColor,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-
-                              const SizedBox(height: 7),
-
-                              const Text(
-                                'You can block or report this '
-                                'sender through your messaging app.',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: mutedColor,
-                                  height: 1.4,
-                                ),
-                              ),
-
-                              const SizedBox(height: 12),
-
-                              SizedBox(
-                                width: double.infinity,
-                                height: 48,
-                                child: ElevatedButton.icon(
-                                  onPressed: () {
-                                    _openBlockReportSpamFlow(item);
-                                  },
-                                  icon: const Icon(
-                                    Icons.block_rounded,
-                                    size: 19,
-                                  ),
-                                  label: const Text(
-                                    'BLOCK SENDER',
-                                    style: TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w900,
-                                      letterSpacing: 0.4,
-                                    ),
-                                  ),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: dangerColor,
-                                    foregroundColor: Colors.white,
-                                    elevation: 0,
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-
-                      const SizedBox(height: 8),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+    HistoryDetailSheet.show(
+      context,
+      item: item,
+      actionBadge: _actionBadge(item['action']),
+      onBlock: () => _openBlockReportSpamFlow(item),
     );
   }
-
-  // ─── Confirm clear ────────────────────────────────────────────────────────────
 
   Future<void> _confirmClearHistory() async {
     final confirm = await showDialog<bool>(
@@ -943,8 +469,7 @@ class _HistoryScreenState extends State<HistoryScreen>
           ],
         ),
         content: const Text(
-          'This will permanently delete all scam detection '
-          'records. This action cannot be undone.',
+          'This deletes this account’s history on this phone. It does not delete messages from your SMS app or change blocked senders. This cannot be undone.',
           style: TextStyle(color: mutedColor, fontSize: 13, height: 1.4),
         ),
         actions: [
@@ -989,31 +514,58 @@ class _HistoryScreenState extends State<HistoryScreen>
     return history;
   }
 
-  // ─── Filter tabs ──────────────────────────────────────────────────────────────
+  // ─── Segmented filter ─────────────────────────────────────────────────────────
 
-  Widget _filterButton(String text, int index) {
+  Widget _segmentItem(String text, int index) {
     final selected = selectedFilter == index;
 
     return Expanded(
       child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
         onTap: () => setState(() => selectedFilter = index),
-        child: Container(
-          height: 42,
-          decoration: BoxDecoration(
-            color: selected ? primaryBlue : surfaceColor,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: selected ? primaryBlue : borderColor),
-          ),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          height: 38,
           alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: selected ? surfaceColor : Colors.transparent,
+            borderRadius: BorderRadius.circular(11),
+            boxShadow: selected
+                ? const [
+                    BoxShadow(
+                      color: Color.fromRGBO(9, 44, 86, 0.12),
+                      blurRadius: 4,
+                      offset: Offset(0, 1),
+                    ),
+                  ]
+                : null,
+          ),
           child: Text(
             text,
             style: TextStyle(
-              color: selected ? Colors.white : inkColor,
+              color: selected ? primaryBlue : mutedColor,
               fontWeight: FontWeight.w700,
               fontSize: 13,
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _segmentedFilter() {
+    return Container(
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: segmentColor,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          _segmentItem('All', 0),
+          _segmentItem('Audio', 1),
+          _segmentItem('Messages', 2),
+        ],
       ),
     );
   }
@@ -1040,11 +592,11 @@ class _HistoryScreenState extends State<HistoryScreen>
               decoration: BoxDecoration(
                 color: surfaceColor,
                 border: Border.all(color: borderColor),
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(9),
               ),
-              child: Row(
+              child: const Row(
                 mainAxisSize: MainAxisSize.min,
-                children: const [
+                children: [
                   Icon(
                     Icons.delete_outline_rounded,
                     size: 13,
@@ -1069,36 +621,80 @@ class _HistoryScreenState extends State<HistoryScreen>
 
   // ─── History tile ─────────────────────────────────────────────────────────────
 
+  Widget _riskPill(String risk) {
+    final Color tone = risk == 'HIGH'
+        ? dangerColor
+        : risk == 'MEDIUM'
+        ? warningColor
+        : risk == 'LOW'
+        ? successColor
+        : mutedColor;
+
+    final String text = risk == 'HIGH'
+        ? 'High risk'
+        : risk == 'MEDIUM'
+        ? 'Medium risk'
+        : risk == 'LOW'
+        ? 'Low risk'
+        : 'Unknown';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+      decoration: BoxDecoration(
+        color: tone.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 11.5,
+          fontWeight: FontWeight.w700,
+          color: tone,
+        ),
+      ),
+    );
+  }
+
   Widget _historyTile(Map<String, dynamic> item) {
     final bool safe = item['safe'];
+    final String risk = item['riskLevel'] as String;
+    final bool isAudio = item['category'] == 'Audio';
 
-    final String message = item['message'] ?? '';
+    final Color tone = risk == 'HIGH'
+        ? dangerColor
+        : risk == 'MEDIUM'
+        ? warningColor
+        : risk == 'LOW'
+        ? successColor
+        : mutedColor;
+
+    // Audio shows its label (the stored message is "Voice analysis result: …").
+    final String preview = isAudio
+        ? (item['result']?.toString() ?? '')
+        : (item['message']?.toString() ?? '');
 
     final double confidenceRaw = item['confidenceRaw'] as double;
 
-    final bool isLong = message.length > 80;
-
     // Audio uses "Confidence".
     // SMS/Message detection uses "Detection Score".
-    final String scoreLabel = item['category'] == 'Audio'
-        ? 'Confidence'
-        : 'Detection Score';
+    final String scoreLabel = isAudio ? 'Confidence' : 'Detection score';
+
+    final String scoreText = isAudio
+        ? '${confidenceRaw.toStringAsFixed(0)}%'
+        : confidenceRaw.toStringAsFixed(0);
 
     return GestureDetector(
       onTap: () => _showMessageBottomSheet(context, item),
       child: Container(
-        margin: const EdgeInsets.only(bottom: 12),
+        margin: const EdgeInsets.only(bottom: 10),
         child: _card(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          padding: const EdgeInsets.fromLTRB(14, 13, 14, 13),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: _iconBadge(
-                  item['category'] == 'Audio' ? Icons.mic : Icons.sms,
-                  tint: accentBlue,
-                ),
+              _iconBadge(
+                isAudio ? Icons.mic_none_rounded : Icons.sms_outlined,
+                tint: risk == 'HIGH' ? dangerColor : accentBlue,
               ),
 
               const SizedBox(width: 12),
@@ -1107,127 +703,95 @@ class _HistoryScreenState extends State<HistoryScreen>
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Name + result
                     Row(
                       children: [
                         Expanded(
                           child: Text(
                             item['name'],
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                              fontSize: 15,
+                              fontSize: 14.5,
                               fontWeight: FontWeight.w800,
                               color: inkColor,
                             ),
                           ),
                         ),
-                        Icon(
-                          safe
-                              ? Icons.check_circle_outline
-                              : Icons.warning_amber_rounded,
-                          size: 14,
-                          color: safe ? successColor : dangerColor,
-                        ),
-                        const SizedBox(width: 4),
-                        Flexible(
-                          child: Text(
-                            item['result'],
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                              color: safe ? successColor : dangerColor,
-                            ),
-                          ),
-                        ),
+                        const SizedBox(width: 8),
+                        _riskPill(risk),
                       ],
                     ),
 
-                    const SizedBox(height: 3),
+                    const SizedBox(height: 2),
 
-                    // Date
                     Text(
                       item['date'],
                       style: const TextStyle(fontSize: 11, color: mutedColor),
                     ),
 
-                    // Message preview
-                    if (message.isNotEmpty) ...[
-                      const SizedBox(height: 7),
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Expanded(
-                            child: Text(
-                              message,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: mutedColor,
-                                height: 1.4,
-                              ),
-                            ),
-                          ),
-                          if (isLong) ...[
-                            const SizedBox(width: 4),
-                            const Text(
-                              'more',
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: primaryBlue,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ],
-                        ],
+                    if (preview.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        preview,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: mutedColor,
+                          height: 1.4,
+                        ),
                       ),
                     ],
 
                     const SizedBox(height: 10),
 
-                    // Detection score / confidence label
                     Text(
                       scoreLabel,
                       style: const TextStyle(
-                        fontSize: 11,
+                        fontSize: 10.5,
                         fontWeight: FontWeight.w700,
                         color: mutedColor,
                       ),
                     ),
 
-                    const SizedBox(height: 5),
+                    const SizedBox(height: 4),
 
-                    // Detection score / confidence bar
                     Row(
                       children: [
                         Expanded(
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(4),
                             child: LinearProgressIndicator(
-                              value: confidenceRaw / 100,
-                              minHeight: 6,
+                              value: (confidenceRaw / 100).clamp(0.0, 1.0),
+                              minHeight: 5,
                               backgroundColor: borderColor,
                               valueColor: AlwaysStoppedAnimation<Color>(
-                                _confidenceColor(confidenceRaw, safe),
+                                risk == 'UNKNOWN'
+                                    ? mutedColor
+                                    : (isAudio
+                                          ? _confidenceColor(
+                                              confidenceRaw,
+                                              safe,
+                                            )
+                                          : tone),
                               ),
                             ),
                           ),
                         ),
                         const SizedBox(width: 8),
                         Text(
-                          item['confidence'],
+                          scoreText,
                           style: TextStyle(
                             fontSize: 11,
                             fontWeight: FontWeight.w700,
-                            color: _confidenceColor(confidenceRaw, safe),
+                            color: tone,
                           ),
                         ),
                       ],
                     ),
 
-                    const SizedBox(height: 7),
+                    const SizedBox(height: 8),
 
-                    // Action badge
                     _actionBadge(item['action']),
                   ],
                 ),
@@ -1283,19 +847,15 @@ class _HistoryScreenState extends State<HistoryScreen>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _header(),
-
-              const SizedBox(height: 18),
-
-              Row(
-                children: [
-                  _filterButton("All", 0),
-                  const SizedBox(width: 8),
-                  _filterButton("Audio", 1),
-                  const SizedBox(width: 8),
-                  _filterButton("Messages", 2),
-                ],
+              PareHeader(
+                title: 'History',
+                subtitle: 'Detection log',
+                username: _username,
               ),
+
+              const SizedBox(height: 16),
+
+              _segmentedFilter(),
 
               const SizedBox(height: 14),
 
@@ -1307,7 +867,26 @@ class _HistoryScreenState extends State<HistoryScreen>
                 child: RefreshIndicator(
                   onRefresh: _loadHistory,
                   color: primaryBlue,
-                  child: items.isEmpty
+                  child: _historyLoading
+                      ? const Center(child: CircularProgressIndicator())
+                      : _historyError != null
+                      ? ListView(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.all(24),
+                              child: Text(
+                                _historyError!,
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                            TextButton(
+                              onPressed: _loadHistory,
+                              child: const Text('Retry'),
+                            ),
+                          ],
+                        )
+                      : items.isEmpty
                       ? ListView(
                           physics: const AlwaysScrollableScrollPhysics(),
                           children: [_emptyState()],

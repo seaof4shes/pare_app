@@ -1,3 +1,4 @@
+import '../../../services/sms_processing_service.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -5,11 +6,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:pare_app/core/security/private_preferences.dart';
 
 import 'package:pare_app/services/notification_service.dart';
 import 'package:pare_app/services/app_update_service.dart';
-import 'package:pare_app/core/security/local_crypto_service.dart';
 
 import 'package:pare_app/core/database/database_helper.dart';
 import 'package:pare_app/core/permissions/permission_service.dart';
@@ -18,6 +18,9 @@ import 'package:pare_app/core/ml/call_detection_service.dart';
 
 import 'package:pare_app/features/4_settings/screens/updates_screen.dart';
 import 'package:pare_app/features/3_history/screens/history_screen.dart';
+import 'package:pare_app/features/3_history/widgets/history_presentation.dart';
+import 'package:pare_app/features/1_auth/screens/rings_painter.dart';
+import 'package:pare_app/features/widgets/pare_shell.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -26,7 +29,8 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => HomeScreenState();
 }
 
-class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
+class HomeScreenState extends State<HomeScreen>
+    with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   final SmsDetectionService smsModel = SmsDetectionService();
 
   // Kept for the current working voice implementation.
@@ -44,15 +48,19 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   // ============================================================
 
   static const Color primaryBlue = Color(0xFF092C56);
+  static const Color heroBlue = Color(0xFF1B4F94);
   static const Color accentBlue = Color(0xFF2A5298);
   static const Color backgroundColor = Color(0xFFF6F8FB);
   static const Color surfaceColor = Color(0xFFFFFFFF);
   static const Color borderColor = Color(0xFFE4E9F0);
+  static const Color dividerColor = Color(0xFFEDF1F6);
   static const Color inkColor = Color(0xFF10192B);
   static const Color mutedColor = Color(0xFF6B7686);
   static const Color successColor = Color(0xFF1C8756);
+  static const Color warningColor = Color(0xFFB9770E);
   static const Color dangerColor = Color(0xFFC0392B);
   static const Color tintBlue = Color.fromRGBO(9, 44, 86, 0.07);
+  static const Color softBlue = Color(0xFFE8EEF8);
 
   static const String _prefKey = 'protection_activated';
 
@@ -62,18 +70,28 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   bool _isActivated = false;
   bool _isLoading = true;
-  bool _modelReady = false;
+
   bool _smsListenerStarted = false;
   bool _callListenerStarted = false;
 
   bool _callDetection = true;
   bool _msgDetection = true;
   bool _msgScamAlerts = true;
+  bool get _smsAlertsActive => _isActivated && _msgDetection && _msgScamAlerts;
 
   bool _isRecordingVoice = false;
   bool _isUploadingVoice = false;
 
   String _username = "Username";
+
+  // Recent detections shown on Home (read-only view of History).
+  List<Map<String, dynamic>> _recent = [];
+
+  // Drives the soft pulse rings around the shield button.
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 3000),
+  )..repeat();
 
   // ============================================================
   // UPDATE STATE
@@ -103,11 +121,22 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     WidgetsBinding.instance.addObserver(this);
 
+    // UI only: lets the shared header bell open the Updates screen.
+    PareUpdateStatus.instance.openUpdates = _openUpdatesScreen;
+
     initializeApp();
   }
 
   Future<void> refreshHomeSettings() async {
     await _loadState();
+  }
+
+  Future<void> refreshUpdateStatus() => _checkForUpdates();
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _loadState();
+    if (state == AppLifecycleState.paused) _stopCallDetection();
   }
 
   Future<void> initializeApp() async {
@@ -162,6 +191,9 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         _latestVoiceModelVersion = _toInt(result['latestVoiceModelVersion']);
       });
 
+      // UI only: tell the shared header bell about the update status.
+      PareUpdateStatus.instance.available.value = _updateAvailable;
+
       debugPrint('🔔 Home update available: $_updateAvailable');
       debugPrint('📱 App update: $_appUpdateAvailable');
       debugPrint('📩 SMS model update: $_smsModelUpdateAvailable');
@@ -215,10 +247,6 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
       if (!mounted) return;
 
-      setState(() {
-        _modelReady = true;
-      });
-
       debugPrint("✅ SMS model loaded");
     } catch (e) {
       debugPrint("❌ Model error: $e");
@@ -230,7 +258,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   // ============================================================
 
   Future<void> _loadState() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await PrivatePreferences.getInstance();
 
     final activated = prefs.getBool(_prefKey) ?? false;
 
@@ -253,6 +281,9 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       _isLoading = false;
     });
 
+    // UI only: refresh the "Recent activity" list.
+    _loadRecentActivity();
+
     if (!_isActivated) {
       await _stopSmsListener();
       await _stopCallDetection();
@@ -270,6 +301,83 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     } else {
       await _stopCallDetection();
     }
+  }
+
+  // ============================================================
+  // RECENT ACTIVITY (read-only, UI only)
+  // ============================================================
+
+  Future<void> _loadRecentActivity() async {
+    try {
+      final prefs = await PrivatePreferences.getInstance();
+      final phone = prefs.getString('phone') ?? '';
+
+      final rows = await DatabaseHelper.instance.getHistory(userPhone: phone);
+
+      final list = rows.map((e) => Map<String, dynamic>.from(e)).toList();
+
+      // Newest first (ISO-8601 strings sort correctly as text).
+      list.sort(
+        (a, b) => (b['dateTime']?.toString() ?? '').compareTo(
+          a['dateTime']?.toString() ?? '',
+        ),
+      );
+
+      if (!mounted) return;
+
+      setState(() => _recent = list.take(3).toList());
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _recent = []);
+    }
+  }
+
+  String _recentSender(dynamic raw) {
+    final s = raw?.toString().trim() ?? '';
+
+    if (s.isEmpty) return 'Unknown sender';
+    if (s.contains(RegExp(r'[a-zA-Z]'))) return s;
+
+    final digits = s.replaceAll(RegExp(r'\D'), '');
+
+    if (digits.length == 10 && digits.startsWith('9')) {
+      return '+63 ${digits.substring(0, 3)} '
+          '${digits.substring(3, 6)} ${digits.substring(6)}';
+    } else if (digits.length == 11 && digits.startsWith('09')) {
+      return '+63 ${digits.substring(1, 4)} '
+          '${digits.substring(4, 7)} ${digits.substring(7)}';
+    } else if (digits.length == 12 && digits.startsWith('63')) {
+      return '+63 ${digits.substring(2, 5)} '
+          '${digits.substring(5, 8)} ${digits.substring(8)}';
+    }
+
+    return s;
+  }
+
+  String _recentWhen(dynamic raw) {
+    final date = DateTime.tryParse(raw?.toString() ?? '');
+
+    if (date == null) return '';
+
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(date.year, date.month, date.day);
+    final diff = today.difference(day).inDays;
+
+    if (diff == 0) {
+      final hour = date.hour > 12
+          ? date.hour - 12
+          : date.hour == 0
+          ? 12
+          : date.hour;
+      final minute = date.minute.toString().padLeft(2, '0');
+      final period = date.hour >= 12 ? 'PM' : 'AM';
+      return '$hour:$minute $period';
+    }
+
+    if (diff == 1) return 'Yesterday';
+
+    return '${date.month}/${date.day}/${date.year}';
   }
 
   // ============================================================
@@ -301,23 +409,39 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         final sender = senderName.isNotEmpty ? senderName : senderNumber;
 
         debugPrint("📩 NATIVE SMS RECEIVED");
-        debugPrint("Sender: $sender");
-        debugPrint("Body: $smsBody");
 
         if (smsBody.isEmpty) return;
 
-        final prefs = await SharedPreferences.getInstance();
+        final prefs = await PrivatePreferences.getInstance();
 
         final activated = prefs.getBool(_prefKey) ?? false;
 
         final msgDetection = prefs.getBool(keyMsgDetection) ?? true;
 
+        if (data['owner'] != null &&
+            data['owner'] != (prefs.getString('phone') ?? '') &&
+            data['owner'] != prefs.getString('sms_owner')) {
+          await const MethodChannel(
+            'pare_app/block_sender',
+          ).invokeMethod('acknowledgeSms', {'id': data['id']});
+          return;
+        }
         if (!activated) {
+          if (data['id'] != null) {
+            await const MethodChannel(
+              'pare_app/block_sender',
+            ).invokeMethod('acknowledgeSms', {'id': data['id']});
+          }
           debugPrint("Protection is OFF. Skipping SMS detection.");
           return;
         }
 
         if (!msgDetection) {
+          if (data['id'] != null) {
+            await const MethodChannel(
+              'pare_app/block_sender',
+            ).invokeMethod('acknowledgeSms', {'id': data['id']});
+          }
           debugPrint(
             "Message Detection is OFF. "
             "Skipping SMS detection.",
@@ -325,16 +449,19 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           return;
         }
 
-        if (!_modelReady) {
-          debugPrint("SMS model is not ready yet.");
-          return;
-        }
-
-        await detectIncomingSms(
+        final saved = await detectIncomingSms(
+          owner: data['owner']?.toString(),
+          deliveryId: data['id']?.toString(),
+          receivedAt: (data['receivedAt'] as num?)?.toInt(),
           message: smsBody,
           sender: sender,
           senderNumber: senderNumber,
         );
+        if (saved && data['id'] != null) {
+          await const MethodChannel(
+            'pare_app/block_sender',
+          ).invokeMethod('acknowledgeSms', {'id': data['id']});
+        }
       },
       onError: (error) {
         debugPrint("❌ Native SMS listener error: $error");
@@ -391,137 +518,26 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   // SMS DETECTION
   // ============================================================
 
-  double _calculateHybridConfidence({
-    required double mlScore,
-    required int keywordScore,
-  }) {
-    final keywordConfidence = (keywordScore / 12).clamp(0.0, 1.0);
-
-    double hybridScore = (mlScore * 0.7) + (keywordConfidence * 0.3);
-
-    if (keywordScore >= 8 && hybridScore < 0.75) {
-      hybridScore = 0.75 + ((keywordScore - 8) * 0.03);
-    }
-
-    if (keywordScore >= 4 && hybridScore < 0.50) {
-      hybridScore = 0.50 + ((keywordScore - 4) * 0.03);
-    }
-
-    return hybridScore.clamp(0.0, 0.99);
-  }
-
-  Future<void> detectIncomingSms({
+  Future<bool> detectIncomingSms({
+    required String? owner,
+    String? deliveryId,
+    int? receivedAt,
     required String message,
     required String sender,
     required String senderNumber,
   }) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-
-      final msgDetection = prefs.getBool(keyMsgDetection) ?? true;
-
-      final msgScamAlerts = prefs.getBool(keyMsgScamAlerts) ?? true;
-
-      if (!msgDetection) {
-        debugPrint("Message Detection is OFF. SMS ignored.");
-        return;
-      }
-
-      final result = await smsModel.predict(message);
-
-      final label = result.label;
-      final mlScore = result.scamProbability;
-
-      final keywordScore = result.keywordScore;
-
-      final risk = result.riskLevel;
-
-      final finalConfidence = _calculateHybridConfidence(
-        mlScore: mlScore,
-        keywordScore: keywordScore,
-      );
-
-      final isRisky =
-          label.toLowerCase() == 'scam' || label.toLowerCase() == 'suspicious';
-
-      final alertShown = isRisky && msgScamAlerts;
-
-      final historyId = await saveSmsToHistory(
-        sender: sender,
-        senderNumber: senderNumber,
-        message: message,
-        label: label,
-        score: finalConfidence,
-        alertShown: alertShown,
-        keywordScore: keywordScore,
-        riskLevel: risk,
-      );
-
-      if (alertShown) {
-        await NotificationService.showScamSmsNotification(
-          sender: sender,
-          message: message,
-          payload: historyId.toString(),
-          riskLevel: risk,
-        );
-      }
-
-      debugPrint("📩 SMS from $sender");
-
-      debugPrint(
-        "Result: $label | "
-        "Risk: $risk | "
-        "ML Score: $mlScore | "
-        "Final Confidence: $finalConfidence",
-      );
-
-      debugPrint("Keyword Score: ${result.keywordScore}");
-    } catch (e) {
-      debugPrint("❌ SMS prediction error: $e");
+      return await SmsProcessingService(smsModel).process({
+        'id': deliveryId,
+        'receivedAt': receivedAt,
+        'body': message,
+        'senderName': sender,
+        'senderNumber': senderNumber,
+        'owner': owner,
+      });
+    } catch (_) {
+      return false;
     }
-  }
-
-  Future<int> saveSmsToHistory({
-    required String sender,
-    required String senderNumber,
-    required String message,
-    required String label,
-    required double score,
-    required bool alertShown,
-    required int keywordScore,
-    required String riskLevel,
-  }) async {
-    final isScam = label.toLowerCase() == 'scam';
-
-    final isSuspicious = label.toLowerCase() == 'suspicious';
-
-    final isRisky = isScam || isSuspicious;
-
-    final prefs = await SharedPreferences.getInstance();
-
-    final currentPhone = prefs.getString('phone') ?? '';
-
-    final id = await DatabaseHelper.instance.insertHistory({
-      'userPhone': currentPhone,
-      'name': sender,
-      'senderNumber': senderNumber,
-      'type': 'SMS Message',
-      'message': await LocalCryptoService.instance.encryptText(message),
-      'result': isRisky ? 'Scam / Suspicious' : 'Safe / Legit',
-      'confidence': score,
-      'action': isRisky
-          ? (alertShown ? 'Alert Shown' : 'Logged Only')
-          : 'Allowed',
-      'category': 'Messages',
-      'safe': isRisky ? 0 : 1,
-      'keywordScore': keywordScore,
-      'riskLevel': riskLevel,
-      'dateTime': DateTime.now().toIso8601String(),
-    });
-
-    debugPrint("✅ Saved SMS to SQLite history with ID: $id");
-
-    return id;
   }
 
   // ============================================================
@@ -533,7 +549,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     required String source,
     String? fileName,
   }) async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await PrivatePreferences.getInstance();
 
     final currentPhone = prefs.getString('phone') ?? '';
 
@@ -554,20 +570,22 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final isHuman = lower.contains('human');
 
     final isSynthetic =
-        lower.contains('ai') ||
-        lower.contains('deepfake') ||
-        lower.contains('synthetic');
+        !lower.contains('possible') &&
+        !lower.contains('suspicious') &&
+        (RegExp(r'\bai\b').hasMatch(lower) ||
+            lower.contains('deepfake') ||
+            lower.contains('synthetic'));
 
     final isSuspicious =
         lower.contains('suspicious') || lower.contains('possible');
 
-    final riskLevel = isSynthetic
-        ? 'HIGH'
-        : isSuspicious
+    final riskLevel = isSuspicious
         ? 'MEDIUM'
+        : isSynthetic
+        ? 'HIGH'
         : isHuman
         ? 'LOW'
-        : 'MEDIUM';
+        : 'UNKNOWN';
 
     final safe = isHuman && !isSynthetic && !isSuspicious;
 
@@ -575,7 +593,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     // Human Voice -> Allowed
     // Suspicious / Possible AI -> Alert Shown
     // AI / Deepfake -> Alert Shown
-    final action = safe ? 'Allowed' : 'Alert Shown';
+    final action = 'Analysis shown';
 
     final id = await DatabaseHelper.instance.insertHistory({
       'userPhone': currentPhone,
@@ -584,9 +602,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ? 'Microphone Sample'
           : 'Uploaded File',
       'type': 'Audio',
-      'message': await LocalCryptoService.instance.encryptText(
-        'Voice analysis result: $label',
-      ),
+      'message': 'Voice analysis result: $label',
       'result': label,
       'confidence': confidence,
       'action': action,
@@ -598,6 +614,9 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     });
 
     debugPrint('✅ Saved voice analysis to SQLite history with ID: $id');
+
+    // UI only: show the new record under "Recent activity".
+    _loadRecentActivity();
 
     return id;
   }
@@ -867,14 +886,17 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final lower = label.toLowerCase();
 
     final isSynthetic =
-        lower.contains('ai') ||
-        lower.contains('deepfake') ||
-        lower.contains('synthetic');
+        !lower.contains('possible') &&
+        !lower.contains('suspicious') &&
+        (RegExp(r'\bai\b').hasMatch(lower) ||
+            lower.contains('deepfake') ||
+            lower.contains('synthetic'));
 
     final isUnknown =
-        lower.contains('suspicious') ||
-        lower.contains('possible') ||
-        lower == 'unknown';
+        !lower.contains('human') &&
+        (lower.contains('suspicious') ||
+            lower.contains('possible') ||
+            !isSynthetic);
 
     // ==========================================================
     // AUDIO ACTION
@@ -893,7 +915,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     // "Blocked" for AI/deepfake results.
     // ==========================================================
 
-    final action = isSynthetic || isUnknown ? 'Alert Shown' : 'Allowed';
+    final action = 'Analysis shown';
 
     final Color tone = isSynthetic
         ? dangerColor
@@ -910,7 +932,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final String verdict = isSynthetic
         ? 'Likely AI-generated voice'
         : isUnknown
-        ? 'Possible AI-generated voice'
+        ? 'Unable to determine voice type'
         : 'Likely a human voice';
 
     final String advice = isSynthetic
@@ -1150,7 +1172,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   // ============================================================
 
   Future<void> _onActivate() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await PrivatePreferences.getInstance();
 
     final newState = !_isActivated;
 
@@ -1214,10 +1236,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     await _showPAREAlert(
       title: newState ? "Protection is on" : "Protection is off",
       message: newState
-          ? "P.A.R.E. is now watching in "
-                "the background. You'll get an "
-                "alert if something looks like "
-                "a scam."
+          ? "SMS protection can analyze messages in the background. Android battery restrictions may delay checks; force-stop pauses protection until you reopen the app. Alerts require notification permission. Voice checks require the app to be open."
           : "Automatic detection has stopped. "
                 "You can turn protection back on "
                 "anytime from Home.",
@@ -1249,6 +1268,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   // ============================================================
 
   Future<void> _onTestVoiceDetection() async {
+    if (!await _allowVoiceAction()) return;
     if (_isRecordingVoice || _isUploadingVoice) {
       return;
     }
@@ -1314,11 +1334,28 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
+  Future<bool> _allowVoiceAction() async {
+    final prefs = await PrivatePreferences.getInstance();
+    await prefs.reload();
+    if (prefs.getBool('call_detection') ?? true) return true;
+    if (mounted) {
+      await _showPAREAlert(
+        title: 'Voice Detection is off',
+        message:
+            'Turn on Voice Detection in Settings before recording or uploading audio.',
+        icon: Icons.mic_off_outlined,
+        iconColor: Colors.orange,
+      );
+    }
+    return false;
+  }
+
   // ============================================================
   // VOICE / AUDIO FILE UPLOAD
   // ============================================================
 
   Future<void> _onUploadVoiceFile() async {
+    if (!await _allowVoiceAction()) return;
     if (_isRecordingVoice || _isUploadingVoice) {
       return;
     }
@@ -1361,10 +1398,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       final fileName = selectedFile.name;
 
       if (!await file.exists()) {
-        debugPrint(
-          '❌ Selected file does not exist: '
-          '${file.path}',
-        );
+        debugPrint('Selected audio file is unavailable');
 
         if (!mounted) return;
 
@@ -1381,8 +1415,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         return;
       }
 
-      debugPrint('✅ Selected audio file: $fileName');
-      debugPrint('📁 Path: ${file.path}');
+      debugPrint('Audio file selected');
       debugPrint('📦 Size: ${await file.length()} bytes');
 
       if (!mounted) return;
@@ -1469,129 +1502,24 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   // ============================================================
-  // HEADER
+  // ============================================================
+  //                        NEW UI (VIEW ONLY)
+  // ============================================================
   // ============================================================
 
+  // ─── Header ────────────────────────────────────────────────────────────────
+  // Same header on every screen (see pare_shell.dart). The update bell is
+  // wired through PareUpdateStatus below.
+
   Widget _header() {
-    final initial = _username.isNotEmpty ? _username[0].toUpperCase() : "U";
-
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Row(
-          children: [
-            Container(
-              width: 42,
-              height: 42,
-              alignment: Alignment.center,
-              decoration: const BoxDecoration(
-                color: primaryBlue,
-                shape: BoxShape.circle,
-              ),
-              child: Text(
-                initial,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            const Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  "P.A.R.E",
-                  style: TextStyle(
-                    color: primaryBlue,
-                    fontSize: 22,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-                Text(
-                  "Protecting All Random Exchange",
-                  style: TextStyle(
-                    color: mutedColor,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-
-        // UPDATE BELL
-        Row(
-          children: [
-            GestureDetector(
-              onTap: _openUpdatesScreen,
-              child: SizedBox(
-                width: 42,
-                height: 42,
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    Container(
-                      width: 40,
-                      height: 40,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: _updateAvailable ? tintBlue : Colors.transparent,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Icon(
-                        Icons.notifications_none_rounded,
-                        color: _updateAvailable ? primaryBlue : mutedColor,
-                        size: 25,
-                      ),
-                    ),
-                    if (_updateAvailable)
-                      Positioned(
-                        right: 0,
-                        top: -2,
-                        child: Container(
-                          width: 17,
-                          height: 17,
-                          alignment: Alignment.center,
-                          decoration: const BoxDecoration(
-                            color: dangerColor,
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Text(
-                            "!",
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 11,
-                              fontWeight: FontWeight.w900,
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(width: 4),
-            SizedBox(
-              width: 40,
-              height: 40,
-              child: Image.asset(
-                'assets/icon/app_icon.png',
-                fit: BoxFit.contain,
-              ),
-            ),
-          ],
-        ),
-      ],
+    return PareHeader(
+      title: 'Home',
+      subtitle: 'Hello, $_username',
+      username: _username,
     );
   }
 
-  // ============================================================
-  // UI HELPERS
-  // ============================================================
+  // ─── Shared pieces ─────────────────────────────────────────────────────────
 
   Widget _card({required Widget child, EdgeInsets? padding}) {
     return Container(
@@ -1599,543 +1527,625 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       padding: padding ?? const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: surfaceColor,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(color: borderColor),
       ),
       child: child,
     );
   }
 
-  Widget _cardHeader(String title, String subtitle) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          title,
-          style: const TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.w800,
-            color: inkColor,
-          ),
-        ),
-        const SizedBox(height: 2),
-        Text(subtitle, style: const TextStyle(fontSize: 12, color: mutedColor)),
-      ],
-    );
-  }
-
   Widget _divider() =>
-      const Divider(height: 1, thickness: 1, color: borderColor);
+      const Divider(height: 1, thickness: 1, color: dividerColor);
 
   Widget _iconBadge(IconData icon, {Color? tint}) {
     final color = tint ?? primaryBlue;
 
     return Container(
-      width: 34,
-      height: 34,
+      width: 36,
+      height: 36,
       alignment: Alignment.center,
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(11),
       ),
-      child: Icon(icon, size: 17, color: color),
+      child: Icon(icon, size: 18, color: color),
     );
   }
 
-  Widget _bulletRow(IconData icon, String text) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _iconBadge(icon),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Padding(
-            padding: const EdgeInsets.only(top: 7),
-            child: Text(
-              text,
-              style: const TextStyle(
-                fontSize: 14,
-                color: inkColor,
-                height: 1.3,
-              ),
-            ),
-          ),
+  Widget _sectionLabel(String text) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 20, 4, 8),
+      child: Text(
+        text,
+        style: const TextStyle(
+          fontSize: 12.5,
+          fontWeight: FontWeight.w700,
+          color: mutedColor,
+          letterSpacing: 0.2,
         ),
-      ],
+      ),
     );
   }
 
-  Widget _statusRow({
+  /// Icon + title + subtitle row used inside cards.
+  Widget _infoRow({
     required IconData icon,
-    required String label,
-    required String statusText,
-    required bool isOn,
+    required String title,
+    String? subtitle,
+    Color tint = accentBlue,
+    Widget? trailing,
+    VoidCallback? onTap,
   }) {
-    return Row(
-      children: [
-        _iconBadge(icon, tint: isOn ? accentBlue : mutedColor),
-        const SizedBox(width: 12),
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: inkColor,
-          ),
-        ),
-        const Spacer(),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          decoration: BoxDecoration(
-            color: isOn
-                ? successColor.withValues(alpha: 0.10)
-                : Colors.grey.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Text(
-            statusText,
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-              color: isOn ? successColor : mutedColor,
+    final row = Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(
+        children: [
+          _iconBadge(icon, tint: tint),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 14.5,
+                    fontWeight: FontWeight.w700,
+                    color: inkColor,
+                  ),
+                ),
+                if (subtitle != null) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: mutedColor,
+                      height: 1.3,
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
-        ),
-      ],
+          if (trailing != null) ...[const SizedBox(width: 8), trailing],
+        ],
+      ),
     );
+
+    if (onTap == null) return row;
+
+    return InkWell(onTap: onTap, child: row);
   }
 
-  Widget _greeting(String subtitle) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          "Hello, $_username",
-          style: const TextStyle(
-            fontSize: 26,
-            fontWeight: FontWeight.w800,
-            color: inkColor,
-            height: 1.15,
-          ),
-        ),
-        const SizedBox(height: 5),
-        Text(
-          subtitle,
-          style: const TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w500,
-            color: mutedColor,
-          ),
-        ),
-      ],
-    );
-  }
+  /// Rows separated by thin dividers, inside one card.
+  Widget _rowsCard(List<Widget> rows) {
+    final children = <Widget>[];
 
-  // ============================================================
-  // VOICE CARD
-  // ============================================================
-
-  Widget _voiceCheckCard() {
-    final isBusy = _isRecordingVoice || _isUploadingVoice;
+    for (var i = 0; i < rows.length; i++) {
+      children.add(rows[i]);
+      if (i < rows.length - 1) children.add(_divider());
+    }
 
     return _card(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+      child: Column(children: children),
+    );
+  }
+
+  // ─── Shield hero ───────────────────────────────────────────────────────────
+
+  Widget _pulseRing(double t, bool on) {
+    final scale = 0.62 + (1.15 - 0.62) * t;
+    final opacity = (0.9 * (1 - t)).clamp(0.0, 1.0);
+
+    return Opacity(
+      opacity: opacity,
+      child: Transform.scale(
+        scale: scale,
+        child: Container(
+          width: 150,
+          height: 150,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: on
+                  ? const Color(0xFFA0FFD2).withValues(alpha: 0.45)
+                  : Colors.white.withValues(alpha: 0.35),
+              width: 1.5,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _heroChip(String label, bool on) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 7,
+              height: 7,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: on
+                    ? const Color(0xFF7CF0B8)
+                    : Colors.white.withValues(alpha: 0.35),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _hero() {
+    final on = _isActivated;
+
+    final title = on ? 'Protection is active' : 'Protection is off';
+
+    final subtitle = on
+        ? (_msgDetection || _callDetection
+              ? 'SMS checks run automatically. Open the app for voice checks.'
+              : 'Protection is active, but all detection options are turned off.')
+        : 'Tap the shield to activate.';
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 500),
+      width: double.infinity,
+      clipBehavior: Clip.antiAlias,
+      padding: const EdgeInsets.fromLTRB(16, 22, 16, 18),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: on
+              ? const [Color(0xFF0A3A47), Color(0xFF157A5B)]
+              : const [primaryBlue, heroBlue],
+        ),
+      ),
+      child: Stack(
         children: [
-          _cardHeader(
-            "Voice Authenticity Check",
-            "Find out if a voice is human or AI-generated",
+          const Positioned(
+            right: -80,
+            top: -90,
+            child: CustomPaint(size: Size(220, 220), painter: RingsPainter()),
           ),
 
-          const SizedBox(height: 16),
-
-          Row(
+          Column(
             children: [
-              Expanded(
-                child: SizedBox(
-                  height: 52,
-                  child: ElevatedButton.icon(
-                    onPressed: isBusy ? null : _onTestVoiceDetection,
-                    icon: _isRecordingVoice
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
-                          )
-                        : const Icon(Icons.mic, size: 18, color: Colors.white),
-                    label: Text(
-                      _isRecordingVoice ? "Analyzing..." : "Record Sample",
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.white,
+              SizedBox(
+                width: 150,
+                height: 150,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    AnimatedBuilder(
+                      animation: _pulse,
+                      builder: (context, child) => Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          _pulseRing(_pulse.value, on),
+                          _pulseRing((_pulse.value + 0.5) % 1.0, on),
+                        ],
                       ),
                     ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: primaryBlue,
-                      disabledBackgroundColor: primaryBlue.withValues(
-                        alpha: 0.55,
-                      ),
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
 
-              const SizedBox(width: 10),
-
-              Expanded(
-                child: SizedBox(
-                  height: 52,
-                  child: OutlinedButton.icon(
-                    onPressed: isBusy ? null : _onUploadVoiceFile,
-                    icon: _isUploadingVoice
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: primaryBlue,
+                    Semantics(
+                      button: !on,
+                      label: on ? 'Protection active' : 'Activate protection',
+                      child: GestureDetector(
+                        onTap: on ? null : _onActivate,
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 400),
+                          width: 100,
+                          height: 100,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: on
+                                ? Colors.white
+                                : Colors.white.withValues(alpha: 0.14),
+                            border: Border.all(
+                              color: on
+                                  ? Colors.white
+                                  : Colors.white.withValues(alpha: 0.4),
+                              width: 1.5,
                             ),
-                          )
-                        : const Icon(
-                            Icons.upload_file_outlined,
-                            size: 18,
-                            color: primaryBlue,
+                            boxShadow: on
+                                ? [
+                                    BoxShadow(
+                                      color: Colors.white.withValues(
+                                        alpha: 0.18,
+                                      ),
+                                      blurRadius: 0,
+                                      spreadRadius: 8,
+                                    ),
+                                  ]
+                                : null,
                           ),
-                    label: Text(
-                      _isUploadingVoice ? "Analyzing..." : "Upload File",
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w800,
-                        color: primaryBlue,
+                          child: Icon(
+                            on
+                                ? Icons.verified_user_rounded
+                                : Icons.shield_outlined,
+                            size: 46,
+                            color: on ? const Color(0xFF157A5B) : Colors.white,
+                          ),
+                        ),
                       ),
                     ),
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: primaryBlue, width: 1.3),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                  ),
+                  ],
                 ),
               ),
+
+              const SizedBox(height: 8),
+
+              Text(
+                title,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 19,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+
+              const SizedBox(height: 3),
+
+              Text(
+                subtitle,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.80),
+                  fontSize: 12.5,
+                  height: 1.4,
+                ),
+              ),
+
+              if (on) ...[
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    _heroChip('Audio', _callDetection),
+                    const SizedBox(width: 6),
+                    _heroChip('Messages', _msgDetection),
+                    const SizedBox(width: 6),
+                    _heroChip('Alerts', _smsAlertsActive),
+                  ],
+                ),
+              ],
             ],
-          ),
-
-          const SizedBox(height: 10),
-
-          const Text(
-            "Record a sample or upload an audio file to check for AI-generated voice.",
-            style: TextStyle(fontSize: 11.5, color: mutedColor, height: 1.3),
           ),
         ],
       ),
     );
   }
 
-  // ============================================================
-  // INACTIVE VIEW
-  // ============================================================
+  // ─── Voice check tiles ─────────────────────────────────────────────────────
+
+  Widget _voiceTile({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required bool primary,
+    required bool busy,
+    required VoidCallback? onTap,
+  }) {
+    final enabled = onTap != null;
+    final fg = primary ? Colors.white : primaryBlue;
+
+    return Expanded(
+      child: Opacity(
+        opacity: enabled || busy ? 1 : 0.5,
+        child: Material(
+          color: primary ? primaryBlue : softBlue,
+          borderRadius: BorderRadius.circular(16),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: onTap,
+            child: Container(
+              constraints: const BoxConstraints(minHeight: 92),
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  busy
+                      ? SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.4,
+                            color: fg,
+                          ),
+                        )
+                      : Icon(icon, size: 24, color: fg),
+                  const SizedBox(height: 12),
+                  Text(
+                    busy ? 'Analyzing...' : title,
+                    style: TextStyle(
+                      fontSize: 14.5,
+                      fontWeight: FontWeight.w700,
+                      color: fg,
+                    ),
+                  ),
+                  const SizedBox(height: 1),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      color: fg.withValues(alpha: 0.75),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _voiceActions() {
+    final isBusy = _isRecordingVoice || _isUploadingVoice;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            _voiceTile(
+              icon: Icons.mic_rounded,
+              title: 'Record sample',
+              subtitle: 'Speak or play a call',
+              primary: true,
+              busy: _isRecordingVoice,
+              onTap: isBusy || !_callDetection ? null : _onTestVoiceDetection,
+            ),
+            const SizedBox(width: 10),
+            _voiceTile(
+              icon: Icons.upload_file_outlined,
+              title: 'Upload file',
+              subtitle: 'Pick an audio file',
+              primary: false,
+              busy: _isUploadingVoice,
+              onTap: isBusy || !_callDetection ? null : _onUploadVoiceFile,
+            ),
+          ],
+        ),
+
+        if (!_callDetection) ...[
+          const SizedBox(height: 8),
+          const Text(
+            'Voice Detection is off. Enable it in Settings.',
+            style: TextStyle(fontSize: 11.5, color: mutedColor),
+          ),
+        ],
+      ],
+    );
+  }
+
+  // ─── Recent activity ───────────────────────────────────────────────────────
+
+  Widget _recentRow(Map<String, dynamic> data) {
+    final isAudio = (data['category'] ?? '') == 'Audio';
+    final risk = historyRiskLabel(data['riskLevel'] as String?);
+
+    final Color tone = risk == 'HIGH'
+        ? dangerColor
+        : risk == 'MEDIUM'
+        ? warningColor
+        : risk == 'LOW'
+        ? successColor
+        : mutedColor;
+
+    final String riskText = risk == 'HIGH'
+        ? 'High'
+        : risk == 'MEDIUM'
+        ? 'Medium'
+        : risk == 'LOW'
+        ? 'Low'
+        : 'Unknown';
+
+    final name = isAudio
+        ? (data['name']?.toString() ?? 'Voice check')
+        : _recentSender(data['name']);
+
+    final kind = isAudio ? 'Voice check' : 'Text message';
+    final when = _recentWhen(data['dateTime']);
+
+    final IconData icon = risk == 'HIGH'
+        ? Icons.warning_amber_rounded
+        : isAudio
+        ? Icons.mic_none_rounded
+        : Icons.sms_outlined;
+
+    final id = data['id'];
+
+    return _infoRow(
+      icon: icon,
+      tint: risk == 'HIGH' ? dangerColor : accentBlue,
+      title: name,
+      subtitle: when.isEmpty ? kind : '$kind · $when',
+      trailing: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+        decoration: BoxDecoration(
+          color: tone.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Text(
+          riskText,
+          style: TextStyle(
+            fontSize: 11.5,
+            fontWeight: FontWeight.w700,
+            color: tone,
+          ),
+        ),
+      ),
+      onTap: id is int
+          ? () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => HistoryScreen(openHistoryId: id),
+                ),
+              );
+            }
+          : null,
+    );
+  }
+
+  Widget _recentActivity() {
+    if (_recent.isEmpty) {
+      return _card(
+        child: const Row(
+          children: [
+            Icon(Icons.history_rounded, size: 20, color: mutedColor),
+            SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'No activity yet. Detected messages and voice checks will appear here.',
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: mutedColor,
+                  height: 1.4,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return _rowsCard(_recent.map(_recentRow).toList());
+  }
+
+  // ─── Inactive view ─────────────────────────────────────────────────────────
 
   Widget _inactiveView() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _greeting("Stay protected from scams."),
+        _hero(),
 
-        const SizedBox(height: 20),
+        _sectionLabel('When active, P.A.R.E. will'),
 
-        _card(
-          child: Row(
-            children: [
-              Container(
-                width: 10,
-                height: 10,
-                margin: const EdgeInsets.only(top: 1),
-                decoration: const BoxDecoration(
-                  color: successColor,
-                  shape: BoxShape.circle,
-                ),
-              ),
-              const SizedBox(width: 12),
-              const Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    "System status",
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: mutedColor,
-                    ),
-                  ),
-                  SizedBox(height: 2),
-                  Text(
-                    "Ready for activation",
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      color: accentBlue,
-                    ),
-                  ),
-                ],
-              ),
-            ],
+        _rowsCard([
+          _infoRow(
+            icon: Icons.graphic_eq_rounded,
+            title: 'Check voices',
+            subtitle: _callDetection
+                ? 'Analyze audio for possible AI-generated voices'
+                : 'Audio analysis is currently off',
           ),
-        ),
+          _infoRow(
+            icon: Icons.sms_outlined,
+            title: 'Scan text messages',
+            subtitle: _msgDetection
+                ? 'Detect scam SMS messages'
+                : 'Message detection is currently off',
+          ),
+          _infoRow(
+            icon: Icons.notifications_active_outlined,
+            title: 'Warn you',
+            subtitle: _msgScamAlerts
+                ? 'Show SMS warnings when notifications are allowed'
+                : 'Scam message alerts are currently off',
+          ),
+        ]),
 
-        const SizedBox(height: 20),
-
-        SizedBox(
-          width: double.infinity,
-          height: 60,
-          child: ElevatedButton(
-            onPressed: _onActivate,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: primaryBlue,
-              elevation: 0,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
-              ),
-            ),
-            child: const Text(
-              "Activate Protection",
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w800,
-                color: Colors.white,
-              ),
+        const Padding(
+          padding: EdgeInsets.fromLTRB(4, 10, 4, 0),
+          child: Center(
+            child: Text(
+              'You can change these options anytime in Settings.',
+              style: TextStyle(fontSize: 12, color: mutedColor),
             ),
           ),
         ),
 
-        const SizedBox(height: 20),
-
-        _card(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                "P.A.R.E will automatically:",
-                style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w800,
-                  color: inkColor,
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              _bulletRow(
-                Icons.graphic_eq_rounded,
-                _callDetection
-                    ? "Analyze audio for possible AI-generated voices"
-                    : "Audio analysis is currently off",
-              ),
-
-              const SizedBox(height: 12),
-
-              _bulletRow(
-                Icons.sms_outlined,
-                _msgDetection
-                    ? "Detect scam SMS messages"
-                    : "Message detection is currently off",
-              ),
-
-              const SizedBox(height: 12),
-
-              _bulletRow(
-                Icons.notifications_active_outlined,
-                _msgScamAlerts
-                    ? "Alert you instantly"
-                    : "Scam message alerts are currently off",
-              ),
-
-              const SizedBox(height: 18),
-
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 10,
-                ),
-                decoration: BoxDecoration(
-                  color: tintBlue,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Text(
-                  "You can change these options anytime in Settings.",
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    color: primaryBlue,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
+        const SizedBox(height: 24),
       ],
     );
   }
 
-  // ============================================================
-  // ACTIVE VIEW
-  // ============================================================
+  // ─── Active view ───────────────────────────────────────────────────────────
 
   Widget _activeView() {
+    final String messageStatus = _smsAlertsActive
+        ? 'Scam alerts on'
+        : !_msgScamAlerts && _msgDetection
+        ? 'Permission needed'
+        : 'Scam alerts off';
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _greeting("Your protection is running in the background."),
+        _hero(),
+
+        _sectionLabel('Voice authenticity check'),
+        _voiceActions(),
+
+        _sectionLabel('How it responds'),
+        _rowsCard([
+          // Audio currently shows results in the app rather than blocking.
+          _infoRow(
+            icon: Icons.graphic_eq_rounded,
+            title: 'Audio',
+            trailing: _statusPill(
+              _callDetection ? 'Results in app' : 'Off',
+              _callDetection,
+            ),
+          ),
+          _infoRow(
+            icon: Icons.sms_outlined,
+            title: 'Messages',
+            trailing: _statusPill(messageStatus, _smsAlertsActive),
+          ),
+        ]),
+
+        _sectionLabel('Recent activity'),
+        _recentActivity(),
 
         const SizedBox(height: 18),
 
-        _card(
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _iconBadge(Icons.check_rounded, tint: successColor),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      "Protection status",
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: mutedColor,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    const Text(
-                      "Protection is active",
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        color: inkColor,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      _msgDetection || _callDetection
-                          ? "Enabled features are running automatically."
-                          : "Protection is active, but all detection options are turned off.",
-                      style: const TextStyle(fontSize: 12, color: mutedColor),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-
-        const SizedBox(height: 14),
-
-        _card(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _cardHeader("Detection", "Controls what P.A.R.E checks"),
-
-              const SizedBox(height: 16),
-
-              _statusRow(
-                icon: Icons.graphic_eq_rounded,
-                label: "Audio",
-                statusText: _callDetection ? "On" : "Off",
-                isOn: _callDetection,
-              ),
-
-              const SizedBox(height: 12),
-
-              _divider(),
-
-              const SizedBox(height: 12),
-
-              _statusRow(
-                icon: Icons.chat_bubble_outline,
-                label: "Messages",
-                statusText: _msgDetection ? "On" : "Off",
-                isOn: _msgDetection,
-              ),
-            ],
-          ),
-        ),
-
-        const SizedBox(height: 14),
-
-        _card(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _cardHeader(
-                "Response Actions",
-                "Controls what P.A.R.E does after detection",
-              ),
-
-              const SizedBox(height: 16),
-
-              // Audio currently alerts rather than blocks.
-              _statusRow(
-                icon: Icons.notifications_active_outlined,
-                label: "Audio",
-                statusText: "Alerts on",
-                isOn: true,
-              ),
-
-              const SizedBox(height: 12),
-
-              _divider(),
-
-              const SizedBox(height: 12),
-
-              _statusRow(
-                icon: Icons.sms_failed_outlined,
-                label: "Messages",
-                statusText: _msgScamAlerts
-                    ? "Scam alerts on"
-                    : "Scam alerts off",
-                isOn: _msgScamAlerts,
-              ),
-            ],
-          ),
-        ),
-
-        const SizedBox(height: 14),
-
-        _voiceCheckCard(),
-
-        const SizedBox(height: 20),
-
         SizedBox(
           width: double.infinity,
-          height: 56,
-          child: OutlinedButton(
+          height: 50,
+          child: TextButton(
             onPressed: _onActivate,
-            style: OutlinedButton.styleFrom(
-              side: const BorderSide(color: dangerColor, width: 1.4),
+            style: TextButton.styleFrom(
+              foregroundColor: dangerColor,
+              backgroundColor: dangerColor.withValues(alpha: 0.08),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(14),
               ),
             ),
             child: const Text(
-              "Deactivate Protection",
-              style: TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w800,
-                color: dangerColor,
-              ),
+              'Deactivate protection',
+              style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w800),
             ),
           ),
         ),
@@ -2152,6 +2162,12 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+
+    if (PareUpdateStatus.instance.openUpdates == _openUpdatesScreen) {
+      PareUpdateStatus.instance.openUpdates = null;
+    }
+
+    _pulse.dispose();
 
     _smsSubscription?.cancel();
 
@@ -2181,7 +2197,7 @@ class HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   children: [
                     _header(),
 
-                    const SizedBox(height: 18),
+                    const SizedBox(height: 16),
 
                     Expanded(
                       child: SingleChildScrollView(

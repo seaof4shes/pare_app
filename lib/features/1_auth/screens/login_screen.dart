@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
+import '../../../core/security/login_policy.dart';
 import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:pare_app/core/security/private_preferences.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import 'package:pare_app/core/database/user_service.dart';
@@ -8,15 +9,13 @@ import 'package:pare_app/features/main_nav_screen.dart';
 
 import 'signup_screen.dart';
 import 'otp_screen.dart';
+import 'rings_painter.dart';
 import 'package:pare_app/features/1_auth/screens/forgot_mpin_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   final bool unlockMode;
 
-  const LoginScreen({
-    super.key,
-    this.unlockMode = false,
-  });
+  const LoginScreen({super.key, this.unlockMode = false});
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -30,10 +29,49 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _autoValidate = false;
   bool _isSendingOtp = false;
   bool _obscurePin = true;
+  bool _returningAccount = false;
+  String _username = '';
 
+  // Design tokens
   static const Color primaryBlue = Color(0xFF092C56);
-  static const Color cardBlue = Color(0xFF1E3A5F);
-  static const Color whiteText = Color(0xFFF0F5F4);
+  static const Color heroBlue = Color(0xFF14437F);
+  static const Color accentBlue = Color(0xFF2A5298);
+  static const Color sheetColor = Color(0xFFEEF2F7);
+  static const Color inkColor = Color(0xFF10192B);
+  static const Color mutedColor = Color(0xFF6B7686);
+  static const Color dangerColor = Color(0xFFC0392B);
+
+  @override
+  void initState() {
+    super.initState();
+    _prefillAccount();
+  }
+
+  Future<void> _prefillAccount() async {
+    try {
+      final prefs = await PrivatePreferences.getInstance();
+      final phone = prefs.getString('phone') ?? '';
+      if (phone.isEmpty) return;
+      final trusted = !requiresLoginOtp(
+        localAccountExists: await UserService().phoneExists(phone),
+        phone: phone,
+        authenticatedPhone: FirebaseAuth.instance.currentUser?.phoneNumber,
+        verificationRequired: prefs.getBool('requireOtp') ?? false,
+      );
+      if (mounted) {
+        // The field shows "+63" already, so only the 10 digits go inside.
+        _phoneController.text = phone.startsWith('+63')
+            ? phone.substring(3)
+            : phone;
+        setState(() {
+          _returningAccount = trusted;
+          _username = prefs.getString('username') ?? '';
+        });
+      }
+    } catch (_) {
+      // Keep account entry available if protected profile loading fails.
+    }
+  }
 
   @override
   void dispose() {
@@ -42,20 +80,39 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
+  // ─── Helpers ───────────────────────────────────────────────────────────────
+
+  /// Accepts "9XXXXXXXXX" or "09XXXXXXXXX" and returns "09XXXXXXXXX".
+  String _normalizePhone(String v) {
+    if (v.length == 10 && v.startsWith('9')) return '0$v';
+    return v;
+  }
+
   String _formatPhone(String rawPhone) {
     return rawPhone.startsWith('0')
         ? '+63${rawPhone.substring(1)}'
         : '+63$rawPhone';
   }
 
+  void _useAnotherAccount() {
+    setState(() {
+      _returningAccount = false;
+      _phoneController.clear();
+      _pinController.clear();
+    });
+  }
+
+  // ─── Login logic (unchanged behavior) ──────────────────────────────────────
+
   Future<void> _onLogin() async {
+    if (_isSendingOtp) return;
     setState(() => _autoValidate = true);
 
     if (!_formKey.currentState!.validate()) {
       return;
     }
 
-    final rawPhone = _phoneController.text.trim();
+    final rawPhone = _normalizePhone(_phoneController.text.trim());
     final pin = _pinController.text.trim();
 
     if (!rawPhone.startsWith('09')) {
@@ -71,31 +128,14 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       final userService = UserService();
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await PrivatePreferences.getInstance();
 
-      // ==========================================================
       // 1. CHECK LOCAL ACCOUNT
-      // ==========================================================
-
       final localAccountExists = await userService.phoneExists(phone);
 
-      // ==========================================================
       // 2. FRESH INSTALL / LOCAL ACCOUNT MISSING
-      // ==========================================================
-      //
-      // IMPORTANT:
-      // Do NOT query Firestore here.
-      //
-      // Firestore requires request.auth != null, but the user has
-      // not completed Firebase Phone Authentication yet.
-      //
-      // Instead, Firebase OTP will authenticate the phone first.
-      //
-      // After successful OTP verification, OtpScreen will restore
-      // the account from Firestore using the authenticated Firebase UID.
-      //
-      // ==========================================================
-
+      // Do NOT query Firestore here: Firebase Phone Auth must finish first.
+      // OtpScreen restores the account from Firestore after OTP success.
       if (!localAccountExists) {
         await prefs.setString('pending_login_phone', phone);
         await prefs.setBool('isLoggedIn', false);
@@ -103,17 +143,15 @@ class _LoginScreenState extends State<LoginScreen> {
         await FirebaseAuth.instance.verifyPhoneNumber(
           phoneNumber: phone,
 
-          // --------------------------------------------------------
-          // AUTOMATIC VERIFICATION
-          // --------------------------------------------------------
           verificationCompleted: (PhoneAuthCredential credential) async {
             try {
               await FirebaseAuth.instance.signInWithCredential(credential);
+              if (FirebaseAuth.instance.currentUser?.phoneNumber != phone) {
+                throw StateError(
+                  'Phone verification did not match this account',
+                );
+              }
 
-              // Firebase authentication is now complete.
-              //
-              // Restore the local account from Firestore using the
-              // authenticated Firebase UID.
               final restored = await userService
                   .restoreCurrentUserFromFirestore(mpin: pin);
 
@@ -154,9 +192,6 @@ class _LoginScreenState extends State<LoginScreen> {
             }
           },
 
-          // --------------------------------------------------------
-          // VERIFICATION FAILED
-          // --------------------------------------------------------
           verificationFailed: (FirebaseAuthException e) {
             if (!mounted) return;
 
@@ -169,9 +204,6 @@ class _LoginScreenState extends State<LoginScreen> {
             );
           },
 
-          // --------------------------------------------------------
-          // OTP SENT
-          // --------------------------------------------------------
           codeSent: (String verificationId, int? resendToken) {
             if (!mounted) return;
 
@@ -183,22 +215,14 @@ class _LoginScreenState extends State<LoginScreen> {
                 builder: (_) => OtpScreen(
                   phone: phone,
                   verificationId: verificationId,
-
-                  // Login, not signup.
                   isSignUp: false,
                   isLogin: true,
-
-                  // Needed so OtpScreen can establish the MPIN
-                  // locally after Firebase authentication.
                   pin: pin,
                 ),
               ),
             );
           },
 
-          // --------------------------------------------------------
-          // AUTO RETRIEVAL TIMEOUT
-          // --------------------------------------------------------
           codeAutoRetrievalTimeout: (String verificationId) {
             // OtpScreen handles manual OTP entry.
           },
@@ -207,14 +231,7 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
 
-      // ==========================================================
-      // 3. LOCAL ACCOUNT EXISTS
-      // ==========================================================
-      //
-      // Existing-device login continues using the local MPIN.
-      //
-      // ==========================================================
-
+      // 3. LOCAL ACCOUNT EXISTS -> existing-device login with local MPIN
       final success = await userService.loginUser(
         usernameOrPhone: phone,
         mpin: pin,
@@ -244,16 +261,15 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
 
-      // ==========================================================
       // 4. CHECK WHETHER OTP IS REQUIRED
-      // ==========================================================
+      final requireOtp = requiresLoginOtp(
+        localAccountExists: localAccountExists,
+        phone: phone,
+        authenticatedPhone: FirebaseAuth.instance.currentUser?.phoneNumber,
+        verificationRequired: prefs.getBool('requireOtp') ?? false,
+      );
 
-      final requireOtp = prefs.getBool('requireOtp') ?? false;
-
-      // ==========================================================
       // 5. NORMAL LOGIN
-      // ==========================================================
-
       if (!requireOtp) {
         final user = await userService.getUserByPhone(phone);
 
@@ -278,26 +294,20 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
 
-      // ==========================================================
-      // 6. EXISTING DEVICE LOGIN → REQUIRE OTP
-      // ==========================================================
-
+      // 6. EXISTING DEVICE LOGIN -> REQUIRE OTP
       await prefs.setString('pending_login_phone', phone);
       await prefs.setBool('isLoggedIn', false);
 
-      // ==========================================================
       // 7. SEND FIREBASE OTP
-      // ==========================================================
-
       await FirebaseAuth.instance.verifyPhoneNumber(
         phoneNumber: phone,
 
-        // --------------------------------------------------------
-        // AUTOMATIC VERIFICATION
-        // --------------------------------------------------------
         verificationCompleted: (PhoneAuthCredential credential) async {
           try {
             await FirebaseAuth.instance.signInWithCredential(credential);
+            if (FirebaseAuth.instance.currentUser?.phoneNumber != phone) {
+              throw StateError('Phone verification did not match this account');
+            }
 
             final user = await userService.getUserByPhone(phone);
 
@@ -329,9 +339,6 @@ class _LoginScreenState extends State<LoginScreen> {
           }
         },
 
-        // --------------------------------------------------------
-        // VERIFICATION FAILED
-        // --------------------------------------------------------
         verificationFailed: (FirebaseAuthException e) {
           if (!mounted) return;
 
@@ -344,9 +351,6 @@ class _LoginScreenState extends State<LoginScreen> {
           );
         },
 
-        // --------------------------------------------------------
-        // OTP SENT
-        // --------------------------------------------------------
         codeSent: (String verificationId, int? resendToken) {
           if (!mounted) return;
 
@@ -366,9 +370,6 @@ class _LoginScreenState extends State<LoginScreen> {
           );
         },
 
-        // --------------------------------------------------------
-        // AUTO RETRIEVAL TIMEOUT
-        // --------------------------------------------------------
         codeAutoRetrievalTimeout: (String verificationId) {
           // OtpScreen handles the OTP entry.
         },
@@ -384,345 +385,56 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  InputDecoration _fieldDecoration({
-    required String hint,
-    required IconData suffixIcon,
-    Widget? suffixWidget,
-  }) {
-    return InputDecoration(
-      hintText: hint,
-      hintStyle: const TextStyle(
-        color: Colors.white54,
-        fontSize: 15,
-        fontWeight: FontWeight.w400,
-      ),
-      filled: true,
-      fillColor: const Color.fromRGBO(255, 255, 255, 0.08),
-      suffixIcon:
-          suffixWidget ?? Icon(suffixIcon, color: Colors.white60, size: 20),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: const BorderSide(
-          color: Color.fromRGBO(255, 255, 255, 0.25),
+  // ─── UI pieces ─────────────────────────────────────────────────────────────
+
+  Widget _hero(double height) {
+    final title = _returningAccount ? 'Welcome back!' : 'Hello!';
+    final subtitle = _returningAccount
+        ? (_username.isNotEmpty
+              ? 'Hi $_username, enter your MPIN'
+              : 'Enter your MPIN to unlock')
+        : 'Welcome to P.A.R.E';
+
+    return ClipRect(
+      child: Container(
+        height: height,
+        width: double.infinity,
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [primaryBlue, heroBlue],
+          ),
         ),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: const BorderSide(color: Colors.white54),
-      ),
-      errorBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: const BorderSide(color: Colors.redAccent),
-      ),
-      focusedErrorBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: const BorderSide(color: Colors.redAccent),
-      ),
-      errorStyle: const TextStyle(
-        fontSize: 12,
-        fontWeight: FontWeight.w500,
-        color: Colors.redAccent,
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      resizeToAvoidBottomInset: false,
-      backgroundColor: const Color(0xFFF2F5F8),
-      body: SafeArea(
-        child: Column(
+        child: Stack(
           children: [
-            Expanded(
-              child: Center(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 28,
-                    vertical: 24,
-                  ),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      // ==================================================
-                      // LOGO
-                      // ==================================================
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          const Text(
-                            "P.A.R.E",
-                            style: TextStyle(
-                              fontSize: 42,
-                              fontWeight: FontWeight.w900,
-                              color: primaryBlue,
-                              letterSpacing: 1.5,
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Container(
-                            width: 46,
-                            height: 46,
-                            decoration: const BoxDecoration(
-                              color: Color.fromRGBO(9, 44, 86, 0.12),
-                              shape: BoxShape.circle,
-                            ),
-                            child: const Icon(
-                              Icons.security,
-                              color: primaryBlue,
-                              size: 26,
-                            ),
-                          ),
-                        ],
-                      ),
-
-                      const SizedBox(height: 6),
-
-                      const Text(
-                        "Protecting All Random Exchanges",
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                          color: Colors.black54,
-                          letterSpacing: 0.3,
-                        ),
-                      ),
-
-                      const SizedBox(height: 32),
-
-                      // ==================================================
-                      // LOGIN CARD
-                      // ==================================================
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 24,
-                          vertical: 30,
-                        ),
-                        decoration: BoxDecoration(
-                          color: cardBlue,
-                          borderRadius: BorderRadius.circular(20),
-                          boxShadow: const [
-                            BoxShadow(
-                              color: Color.fromRGBO(9, 44, 86, 0.25),
-                              blurRadius: 20,
-                              offset: Offset(0, 8),
-                            ),
-                          ],
-                        ),
-                        child: Form(
-                          key: _formKey,
-                          autovalidateMode: _autoValidate
-                              ? AutovalidateMode.onUserInteraction
-                              : AutovalidateMode.disabled,
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Center(
-                                child: Text(
-                                  "Login",
-                                  style: TextStyle(
-                                    fontSize: 22,
-                                    fontWeight: FontWeight.w800,
-                                    color: whiteText,
-                                    letterSpacing: 0.5,
-                                  ),
-                                ),
-                              ),
-
-                              const SizedBox(height: 24),
-
-                              // ==================================================
-                              // PHONE NUMBER
-                              // ==================================================
-                              TextFormField(
-                                controller: _phoneController,
-                                keyboardType: TextInputType.number,
-                                maxLength: 11,
-                                inputFormatters: [
-                                  FilteringTextInputFormatter.digitsOnly,
-                                ],
-                                style: const TextStyle(
-                                  color: whiteText,
-                                  fontSize: 15,
-                                ),
-                                decoration: _fieldDecoration(
-                                  hint: "Phone number",
-                                  suffixIcon: Icons.person_outline,
-                                ).copyWith(counterText: ""),
-                                validator: (v) {
-                                  if (v == null || v.isEmpty) {
-                                    return "Phone number is required";
-                                  }
-
-                                  if (v.length != 11) {
-                                    return "Please enter an 11-digit number";
-                                  }
-
-                                  if (!v.startsWith('09')) {
-                                    return "Must start with 09";
-                                  }
-
-                                  return null;
-                                },
-                              ),
-
-                              const SizedBox(height: 14),
-
-                              // ==================================================
-                              // MPIN
-                              // ==================================================
-                              TextFormField(
-                                controller: _pinController,
-                                keyboardType: TextInputType.number,
-                                maxLength: 6,
-                                obscureText: _obscurePin,
-                                inputFormatters: [
-                                  FilteringTextInputFormatter.digitsOnly,
-                                ],
-                                style: const TextStyle(
-                                  color: whiteText,
-                                  fontSize: 15,
-                                ),
-                                decoration: _fieldDecoration(
-                                  hint: "6-digit PIN",
-                                  suffixIcon: Icons.lock_outline,
-                                  suffixWidget: GestureDetector(
-                                    onTap: () {
-                                      setState(() {
-                                        _obscurePin = !_obscurePin;
-                                      });
-                                    },
-                                    child: Icon(
-                                      _obscurePin
-                                          ? Icons.lock_outline
-                                          : Icons.lock_open_outlined,
-                                      color: Colors.white60,
-                                      size: 20,
-                                    ),
-                                  ),
-                                ).copyWith(counterText: ""),
-                                validator: (v) {
-                                  if (v == null || v.isEmpty) {
-                                    return "PIN is required";
-                                  }
-
-                                  if (v.length != 6) {
-                                    return "PIN must be exactly 6 digits";
-                                  }
-
-                                  return null;
-                                },
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-
-                      const SizedBox(height: 24),
-
-                      // ==================================================
-                      // LOGIN BUTTON
-                      // ==================================================
-                      SizedBox(
-                        width: double.infinity,
-                        height: 54,
-                        child: ElevatedButton(
-                          onPressed: _isSendingOtp ? null : _onLogin,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: primaryBlue,
-                            disabledBackgroundColor: Colors.grey.shade400,
-                            elevation: 4,
-                            shadowColor: const Color.fromRGBO(9, 44, 86, 0.4),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                          ),
-                          child: _isSendingOtp
-                              ? const SizedBox(
-                                  width: 24,
-                                  height: 24,
-                                  child: CircularProgressIndicator(
-                                    color: Colors.white,
-                                    strokeWidth: 2.5,
-                                  ),
-                                )
-                              : const Text(
-                                  "Login",
-                                  style: TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.w800,
-                                    color: whiteText,
-                                    letterSpacing: 0.5,
-                                  ),
-                                ),
-                        ),
-                      ),
-
-                      const SizedBox(height: 14),
-
-                      // ==================================================
-                      // FORGOT MPIN
-                      // ==================================================
-                      GestureDetector(
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const ForgotMpinScreen(),
-                            ),
-                          );
-                        },
-                        child: const Text(
-                          "Forgot Password?",
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                            color: primaryBlue,
-                            decoration: TextDecoration.underline,
-                            decorationColor: primaryBlue,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+            const Positioned(
+              left: -80,
+              top: -80,
+              child: CustomPaint(size: Size(240, 240), painter: RingsPainter()),
             ),
-
-            // ==================================================
-            // SIGN-UP FOOTER
-            // ==================================================
-            Padding(
-              padding: const EdgeInsets.only(bottom: 28),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
+            Positioned(
+              left: 26,
+              bottom: 56,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
-                    "Don't have an account? ",
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.black54,
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 40,
+                      fontWeight: FontWeight.w800,
+                      height: 1.1,
                     ),
                   ),
-                  GestureDetector(
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => const SignUpScreen()),
-                      );
-                    },
-                    child: const Text(
-                      "Sign up",
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w800,
-                        color: primaryBlue,
-                      ),
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
                     ),
                   ),
                 ],
@@ -733,4 +445,403 @@ class _LoginScreenState extends State<LoginScreen> {
       ),
     );
   }
+
+  InputDecoration _pillDecoration({
+    required String hint,
+    required Widget prefix,
+    Widget? suffix,
+  }) {
+    OutlineInputBorder border(Color color, double width) => OutlineInputBorder(
+      borderRadius: BorderRadius.circular(30),
+      borderSide: BorderSide(color: color, width: width),
+    );
+
+    return InputDecoration(
+      counterText: '',
+      hintText: hint,
+      hintStyle: const TextStyle(color: Color(0xFF9AA4B2), fontSize: 14),
+      filled: true,
+      fillColor: Colors.white,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 17),
+      prefixIcon: Padding(
+        padding: const EdgeInsets.only(left: 18, right: 10),
+        child: prefix,
+      ),
+      prefixIconConstraints: const BoxConstraints(minWidth: 0, minHeight: 0),
+      suffixIcon: suffix,
+      enabledBorder: border(Colors.transparent, 1),
+      focusedBorder: border(accentBlue, 1.4),
+      errorBorder: border(dangerColor, 1),
+      focusedErrorBorder: border(dangerColor, 1.4),
+      errorStyle: const TextStyle(fontSize: 12, color: dangerColor),
+    );
+  }
+
+  Widget _phoneField() {
+    return TextFormField(
+      controller: _phoneController,
+      keyboardType: TextInputType.number,
+      maxLength: 11,
+      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+      style: const TextStyle(
+        color: inkColor,
+        fontSize: 15,
+        fontWeight: FontWeight.w500,
+      ),
+      decoration: _pillDecoration(
+        hint: '9XX XXX XXXX',
+        prefix: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.phone_iphone_rounded, size: 19, color: mutedColor),
+            const SizedBox(width: 8),
+            const Text(
+              '+63',
+              style: TextStyle(
+                color: inkColor,
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Container(width: 1, height: 20, color: const Color(0xFFE4E9F0)),
+          ],
+        ),
+      ),
+      validator: (v) {
+        if (v == null || v.isEmpty) return 'Phone number is required';
+
+        final n = _normalizePhone(v);
+
+        if (n.length != 11) return 'Please enter your 10-digit number';
+        if (!n.startsWith('09')) return 'Must start with 9';
+
+        return null;
+      },
+    );
+  }
+
+  Widget _pinField() {
+    return TextFormField(
+      controller: _pinController,
+      keyboardType: TextInputType.number,
+      maxLength: 6,
+      obscureText: _obscurePin,
+      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+      style: const TextStyle(
+        color: inkColor,
+        fontSize: 15,
+        fontWeight: FontWeight.w500,
+        letterSpacing: 2,
+      ),
+      decoration: _pillDecoration(
+        hint: '6-digit MPIN',
+        prefix: const Icon(
+          Icons.lock_outline_rounded,
+          size: 19,
+          color: mutedColor,
+        ),
+        suffix: IconButton(
+          onPressed: () => setState(() => _obscurePin = !_obscurePin),
+          icon: Icon(
+            _obscurePin
+                ? Icons.visibility_outlined
+                : Icons.visibility_off_outlined,
+            size: 19,
+            color: mutedColor,
+          ),
+        ),
+      ),
+      validator: (v) {
+        if (v == null || v.isEmpty) return 'PIN is required';
+        if (v.length != 6) return 'PIN must be exactly 6 digits';
+        return null;
+      },
+    );
+  }
+
+  Widget _loginButton() {
+    return SizedBox(
+      width: double.infinity,
+      height: 54,
+      child: ElevatedButton(
+        onPressed: _isSendingOtp ? null : _onLogin,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: primaryBlue,
+          foregroundColor: Colors.white,
+          disabledBackgroundColor: Colors.grey.shade400,
+          elevation: 4,
+          shadowColor: const Color.fromRGBO(9, 44, 86, 0.35),
+          shape: const StadiumBorder(),
+        ),
+        child: _isSendingOtp
+            ? const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(
+                  color: Colors.white,
+                  strokeWidth: 2.5,
+                ),
+              )
+            : Text(
+                _returningAccount ? 'Unlock' : 'Login',
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.4,
+                ),
+              ),
+      ),
+    );
+  }
+
+  // ─── Build ─────────────────────────────────────────────────────────────────
+
+  @override
+  Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+
+    final heroHeight = media.padding.top + 260;
+    final sheetTop = heroHeight - 40;
+
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.light,
+      child: Scaffold(
+        resizeToAvoidBottomInset: true,
+        backgroundColor: sheetColor,
+        body: SingleChildScrollView(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          child: Stack(
+            children: [
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                height: heroHeight,
+                child: _hero(heroHeight),
+              ),
+
+              // Rounded sheet with the form.
+              Padding(
+                padding: EdgeInsets.only(top: sheetTop),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minHeight: media.size.height - sheetTop,
+                  ),
+                  child: Container(
+                    width: double.infinity,
+                    padding: EdgeInsets.fromLTRB(
+                      26,
+                      30,
+                      26,
+                      24 + media.padding.bottom,
+                    ),
+                    decoration: const BoxDecoration(
+                      color: sheetColor,
+                      borderRadius: BorderRadius.vertical(
+                        top: Radius.circular(36),
+                      ),
+                    ),
+                    child: Form(
+                      key: _formKey,
+                      autovalidateMode: _autoValidate
+                          ? AutovalidateMode.onUserInteraction
+                          : AutovalidateMode.disabled,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _returningAccount ? 'Unlock' : 'Login',
+                            style: const TextStyle(
+                              fontSize: 28,
+                              fontWeight: FontWeight.w800,
+                              color: primaryBlue,
+                            ),
+                          ),
+
+                          const SizedBox(height: 22),
+
+                          if (!_returningAccount) ...[
+                            _phoneField(),
+                            const SizedBox(height: 14),
+                          ],
+
+                          _pinField(),
+
+                          const SizedBox(height: 6),
+
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: GestureDetector(
+                              onTap: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => const ForgotMpinScreen(),
+                                  ),
+                                );
+                              },
+                              child: const Padding(
+                                padding: EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 6,
+                                ),
+                                child: Text(
+                                  'Forgot MPIN?',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: accentBlue,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+
+                          const SizedBox(height: 14),
+
+                          _loginButton(),
+
+                          const SizedBox(height: 22),
+
+                          Center(
+                            child: _returningAccount
+                                ? GestureDetector(
+                                    onTap: _isSendingOtp
+                                        ? null
+                                        : _useAnotherAccount,
+                                    child: Text.rich(
+                                      TextSpan(
+                                        style: const TextStyle(
+                                          fontSize: 13,
+                                          color: mutedColor,
+                                        ),
+                                        children: [
+                                          TextSpan(
+                                            text: _username.isNotEmpty
+                                                ? 'Not $_username? '
+                                                : 'Not you? ',
+                                          ),
+                                          const TextSpan(
+                                            text: 'Use another account',
+                                            style: TextStyle(
+                                              color: primaryBlue,
+                                              fontWeight: FontWeight.w800,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  )
+                                : GestureDetector(
+                                    onTap: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) => const SignUpScreen(),
+                                        ),
+                                      );
+                                    },
+                                    child: const Text.rich(
+                                      TextSpan(
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          color: mutedColor,
+                                        ),
+                                        children: [
+                                          TextSpan(
+                                            text: "Don't have an account? ",
+                                          ),
+                                          TextSpan(
+                                            text: 'Sign Up',
+                                            style: TextStyle(
+                                              color: primaryBlue,
+                                              fontWeight: FontWeight.w800,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+              // Shield illustration sitting on the sheet edge
+              // (this is the "plant" from the reference design).
+              Positioned(
+                top: sheetTop - 108,
+                right: 28,
+                child: const CustomPaint(
+                  size: Size(96, 130),
+                  painter: _ShieldPainter(),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Simple two-tone shield with a check mark and a soft ground shadow.
+class _ShieldPainter extends CustomPainter {
+  const _ShieldPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height - 12; // leave room for the shadow
+
+    // Ground shadow
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: Offset(w / 2, h + 7),
+        width: w * 0.85,
+        height: 10,
+      ),
+      Paint()..color = const Color(0x22092C56),
+    );
+
+    final shield = Path()
+      ..moveTo(w * 0.5, 0)
+      ..cubicTo(w * 0.65, h * 0.10, w * 0.85, h * 0.14, w, h * 0.14)
+      ..cubicTo(w, h * 0.60, w * 0.78, h * 0.85, w * 0.5, h)
+      ..cubicTo(w * 0.22, h * 0.85, 0, h * 0.60, 0, h * 0.14)
+      ..cubicTo(w * 0.15, h * 0.14, w * 0.35, h * 0.10, w * 0.5, 0)
+      ..close();
+
+    // Right half (darker)
+    canvas.drawPath(shield, Paint()..color = const Color(0xFF2A5298));
+
+    // Left half (lighter) for the two-tone look
+    canvas.save();
+    canvas.clipRect(Rect.fromLTWH(0, 0, w / 2, h));
+    canvas.drawPath(shield, Paint()..color = const Color(0xFF5B8DD6));
+    canvas.restore();
+
+    // Check mark
+    final check = Path()
+      ..moveTo(w * 0.27, h * 0.50)
+      ..lineTo(w * 0.44, h * 0.66)
+      ..lineTo(w * 0.74, h * 0.36);
+
+    canvas.drawPath(
+      check,
+      Paint()
+        ..color = Colors.white
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = w * 0.08
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

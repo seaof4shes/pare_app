@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+import '../security/local_crypto_service.dart';
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -5,13 +7,25 @@ class LocalDatabase {
   static final LocalDatabase instance = LocalDatabase._init();
 
   static Database? _database;
+  static Future<Database>? _opening;
 
-  LocalDatabase._init();
+  final Database? _testDatabase;
+  LocalDatabase._init() : _testDatabase = null;
+  @visibleForTesting
+  LocalDatabase.forTesting(Database database) : _testDatabase = database;
+  @visibleForTesting
+  Future<Database> openTestDatabase(String filename) => _initDB(filename);
 
   Future<Database> get database async {
+    if (_testDatabase != null) return _testDatabase;
     if (_database != null) return _database!;
 
-    _database = await _initDB('pare_app.db');
+    _database = await (_opening ??= _initDB('pare_app.db').catchError((
+      Object error,
+    ) {
+      _opening = null;
+      throw error;
+    }));
 
     return _database!;
   }
@@ -22,7 +36,10 @@ class LocalDatabase {
 
     return await openDatabase(
       path,
-      version: 4,
+      version: 5,
+      onConfigure: (db) async {
+        await db.rawQuery('PRAGMA secure_delete = ON');
+      },
       onCreate: _createDB,
       onUpgrade: _upgradeDB,
     );
@@ -38,6 +55,8 @@ class LocalDatabase {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         firebase_uid TEXT,
         username TEXT NOT NULL,
+        username_lookup TEXT,
+        phone_lookup TEXT UNIQUE,
         phone_number TEXT NOT NULL UNIQUE,
         mpin_hash TEXT NOT NULL,
         created_at TEXT NOT NULL,
@@ -53,6 +72,40 @@ class LocalDatabase {
   // ============================================================
 
   Future<void> _upgradeDB(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 5) {
+      await db.execute('ALTER TABLE users ADD COLUMN username_lookup TEXT');
+      await db.execute('ALTER TABLE users ADD COLUMN phone_lookup TEXT');
+      final crypto = LocalCryptoService.instance;
+      for (final row in await db.query('users')) {
+        final values = <String, dynamic>{
+          'username_lookup': await crypto.lookupKey(
+            'username:${row['username']}',
+          ),
+          'phone_lookup': await crypto.lookupKey(
+            'phone:${row['phone_number']}',
+          ),
+        };
+        for (final field in [
+          'username',
+          'phone_number',
+          'firebase_uid',
+          'mpin_hash',
+        ]) {
+          if (row[field] != null) {
+            values[field] = await crypto.encryptText(row[field].toString());
+          }
+        }
+        await db.update(
+          'users',
+          values,
+          where: 'id = ?',
+          whereArgs: [row['id']],
+        );
+      }
+      await db.execute(
+        'CREATE UNIQUE INDEX user_phone_lookup ON users(phone_lookup)',
+      );
+    }
     // ==========================================================
     // Version 1 → Version 2
     // ==========================================================

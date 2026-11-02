@@ -1,859 +1,261 @@
 import 'dart:convert';
 import 'dart:developer';
 import 'dart:io';
-
+import 'package:crypto/crypto.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_litert/flutter_litert.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:pare_app/core/security/private_preferences.dart';
+import 'sms_risk_policy.dart';
 
 class SmsDetectionResult {
   final double scamProbability;
   final String label;
   final String riskLevel;
   final int keywordScore;
+  final double riskScore;
+  final String explanation;
+  final int modelVersion;
 
   SmsDetectionResult({
     required this.scamProbability,
     required this.label,
     required this.riskLevel,
     required this.keywordScore,
+    required this.riskScore,
+    required this.explanation,
+    required this.modelVersion,
   });
 }
 
 class SmsDetectionService {
-  static const int sequenceLength = 200;
-
-  static const String _assetModelPath = 'assets/models/sms_scam_model.tflite';
-
-  static const String _assetVocabPath = 'assets/models/vocab.json';
-
-  static const String _activeModelPathKey = 'pare_active_sms_model_path';
-
-  static const String _smsModelVersionKey = 'pare_installed_sms_model_version';
-
-  static const int defaultSmsModelVersion = 1;
-
+  static const sequenceLength = 200;
+  static const defaultSmsModelVersion = 4;
+  static const _bundleKey = 'pare_sms_bundle_v4';
   Interpreter? _interpreter;
-
   Map<String, int> _wordIndex = {};
+  String? _loadedBundle;
+  int _version = defaultSmsModelVersion;
+  double _threshold = 0.7;
+  Future<void>? _loading;
 
-  bool _isLoaded = false;
+  Future<void> loadModel() =>
+      _loading ??= _load().whenComplete(() => _loading = null);
 
-  // ============================================================
-  // MODEL LOADING
-  // ============================================================
-
-  Future<void> loadModel() async {
-    if (_isLoaded) return;
-
-    final prefs = await SharedPreferences.getInstance();
-
-    final savedModelPath = prefs.getString(_activeModelPathKey);
-
-    if (savedModelPath != null && savedModelPath.isNotEmpty) {
-      final savedModelFile = File(savedModelPath);
-
-      if (await savedModelFile.exists()) {
-        try {
-          log(
-            '📩 Loading downloaded SMS model: '
-            '$savedModelPath',
-          );
-
-          _interpreter = Interpreter.fromFile(savedModelFile);
-
-          log('✅ Downloaded SMS model loaded successfully.');
-
-          await _loadVocabulary();
-
-          _isLoaded = true;
-          return;
-        } catch (e, stackTrace) {
-          log('⚠️ Downloaded SMS model could not be loaded: $e');
-          log('⚠️ Stack trace: $stackTrace');
-
-          await prefs.remove(_activeModelPathKey);
-        }
-      } else {
-        await prefs.remove(_activeModelPathKey);
+  Future<void> _load() async {
+    final prefs = await PrivatePreferences.getInstance();
+    final bundle = prefs.getString(_bundleKey);
+    if (_interpreter != null && bundle == _loadedBundle) return;
+    Interpreter? candidate;
+    try {
+      if (bundle != null) {
+        final dir = Directory(bundle);
+        final manifest =
+            jsonDecode(await File('${dir.path}/manifest.json').readAsString())
+                as Map<String, dynamic>;
+        final model = File('${dir.path}/model.tflite');
+        final vocabFile = File('${dir.path}/vocab.json');
+        await _verify(manifest, model, vocabFile);
+        candidate = Interpreter.fromFile(model);
+        final vocab = _vocabulary(await vocabFile.readAsString());
+        _validate(candidate, vocab.length);
+        _replace(
+          candidate,
+          vocab,
+          manifest['version'] as int,
+          (manifest['cautionThreshold'] as num).toDouble(),
+          bundle,
+        );
+        candidate = null;
+        return;
       }
+    } catch (e) {
+      candidate?.close();
+      log('Downloaded SMS bundle rejected; using bundled model: $e');
+      await prefs.remove(_bundleKey);
     }
-
-    log('📩 Loading bundled SMS model...');
-
-    _interpreter = await Interpreter.fromAsset(_assetModelPath);
-
-    await _loadVocabulary();
-
-    _isLoaded = true;
-
-    log('✅ Bundled SMS model loaded successfully.');
-  }
-
-  Future<void> _loadVocabulary() async {
-    final vocabString = await rootBundle.loadString(_assetVocabPath);
-
-    final List<dynamic> vocabList = jsonDecode(vocabString);
-
-    _wordIndex = {
-      for (int i = 0; i < vocabList.length; i++) vocabList[i].toString(): i,
-    };
-
-    log(
-      '📚 SMS vocabulary loaded: '
-      '${_wordIndex.length} words',
+    final vocab = _vocabulary(
+      await rootBundle.loadString('assets/models/vocab.json'),
     );
+    final manifest =
+        jsonDecode(
+              await rootBundle.loadString('assets/models/sms_manifest.json'),
+            )
+            as Map<String, dynamic>;
+    candidate = await Interpreter.fromAsset(
+      'assets/models/sms_scam_model.tflite',
+    );
+    try {
+      _validate(candidate, vocab.length);
+      _replace(
+        candidate,
+        vocab,
+        defaultSmsModelVersion,
+        (manifest['cautionThreshold'] as num).toDouble(),
+        null,
+      );
+    } catch (_) {
+      candidate.close();
+      rethrow;
+    }
   }
 
-  // ============================================================
-  // SMS MODEL UPDATE
-  // ============================================================
+  List<String> _vocabulary(String text) {
+    final words = (jsonDecode(text) as List).cast<String>();
+    if (words.length < 3 ||
+        words[0] != '' ||
+        words[1] != '[UNK]' ||
+        words.toSet().length != words.length) {
+      throw const FormatException('Invalid model vocabulary');
+    }
+    return words;
+  }
+
+  Future<void> _verify(
+    Map<String, dynamic> manifest,
+    File model,
+    File vocab,
+  ) async {
+    if (manifest['version'] is! int ||
+        manifest['version'] < defaultSmsModelVersion ||
+        manifest['sequenceLength'] != sequenceLength ||
+        manifest['preprocessing'] != 'ascii_url_number_v1' ||
+        manifest['cautionThreshold'] is! num ||
+        manifest['cautionThreshold'] < 0 ||
+        manifest['cautionThreshold'] > 1) {
+      throw const FormatException('Unsupported SMS model package');
+    }
+    if (sha256.convert(await model.readAsBytes()).toString() !=
+            manifest['modelSha256'] ||
+        sha256.convert(await vocab.readAsBytes()).toString() !=
+            manifest['vocabSha256']) {
+      throw const FormatException('SMS model package integrity check failed');
+    }
+  }
+
+  void _validate(Interpreter model, int vocabularySize) {
+    model.allocateTensors();
+    final input = model.getInputTensor(0);
+    final output = model.getOutputTensor(0);
+    if (input.shape.join(',') != '1,200' ||
+        output.shape.join(',') != '1,1' ||
+        !input.type.toString().toLowerCase().contains('int32') ||
+        !output.type.toString().toLowerCase().contains('float32')) {
+      throw const FormatException('Incompatible SMS model tensors');
+    }
+    final result = [
+      [0.0],
+    ];
+    model.run([List.filled(sequenceLength, vocabularySize - 1)], result);
+    if (!result[0][0].isFinite || result[0][0] < 0 || result[0][0] > 1) {
+      throw const FormatException('Invalid SMS model output');
+    }
+  }
+
+  void _replace(
+    Interpreter model,
+    List<String> vocab,
+    int version,
+    double threshold,
+    String? bundle,
+  ) {
+    _interpreter?.close();
+    _interpreter = model;
+    _wordIndex = {for (var i = 0; i < vocab.length; i++) vocab[i]: i};
+    _version = version;
+    _threshold = threshold;
+    _loadedBundle = bundle;
+  }
 
   Future<Map<String, dynamic>> downloadAndInstallModel({
     required String storagePath,
     required int modelVersion,
   }) async {
-    log('📩 Starting SMS model update...');
-    log('☁️ Storage path: $storagePath');
-    log('📦 Target model version: $modelVersion');
-
-    File? tempFile;
-
+    Interpreter? validation;
     try {
-      final directory = await getApplicationDocumentsDirectory();
-
-      final modelsDirectory = Directory('${directory.path}/sms_models');
-
-      if (!await modelsDirectory.exists()) {
-        await modelsDirectory.create(recursive: true);
+      if (modelVersion <= await getInstalledModelVersion()) {
+        throw StateError('Model is already installed or older');
       }
-
-      tempFile = File(
-        '${modelsDirectory.path}/sms_scam_model_v${modelVersion}_temp.tflite',
-      );
-
-      final activeFile = File(
-        '${modelsDirectory.path}/sms_scam_model_v$modelVersion.tflite',
-      );
-
-      log('📁 Temporary model path: ${tempFile.path}');
-      log('📁 Active model path: ${activeFile.path}');
-
-      // --------------------------------------------------------
-      // 1. DOWNLOAD FROM FIREBASE STORAGE
-      // --------------------------------------------------------
-
-      final storageRef = FirebaseStorage.instance.ref().child(storagePath);
-
-      log('⬇️ Downloading SMS model...');
-
-      await storageRef.writeToFile(tempFile);
-
-      if (!await tempFile.exists()) {
-        throw Exception('Downloaded SMS model file does not exist.');
+      final root = await getApplicationDocumentsDirectory();
+      final directory = await Directory(
+        '${root.path}/sms_models/v${modelVersion}_${DateTime.now().microsecondsSinceEpoch}',
+      ).create(recursive: true);
+      final prefix = storagePath.replaceFirst(RegExp(r'\.tflite$'), '');
+      final storage = FirebaseStorage.instance;
+      final model = File('${directory.path}/model.tflite');
+      final vocabFile = File('${directory.path}/vocab.json');
+      final manifestFile = File('${directory.path}/manifest.json');
+      await storage.ref(storagePath).writeToFile(model);
+      await storage.ref('${prefix}_vocab.json').writeToFile(vocabFile);
+      await storage.ref('${prefix}_manifest.json').writeToFile(manifestFile);
+      final manifest =
+          jsonDecode(await manifestFile.readAsString()) as Map<String, dynamic>;
+      if (manifest['version'] != modelVersion) {
+        throw const FormatException('Version mismatch');
       }
-
-      final fileSize = await tempFile.length();
-
-      log(
-        '📦 Downloaded SMS model size: '
-        '$fileSize bytes',
-      );
-
-      if (fileSize <= 0) {
-        throw Exception('Downloaded SMS model is empty.');
+      await _verify(manifest, model, vocabFile);
+      final vocab = _vocabulary(await vocabFile.readAsString());
+      validation = Interpreter.fromFile(model);
+      _validate(validation, vocab.length);
+      final prefs = await PrivatePreferences.getInstance();
+      // Single pointer commit: interrupted downloads never replace the active package.
+      if (!await prefs.setString(_bundleKey, directory.path)) {
+        throw StateError('Could not activate SMS package');
       }
-
-      // --------------------------------------------------------
-      // 2. VERIFY THAT THE MODEL CAN ACTUALLY LOAD
-      // --------------------------------------------------------
-
-      log('🔍 Validating downloaded SMS model...');
-
-      final validationInterpreter = Interpreter.fromFile(tempFile);
-
-      validationInterpreter.allocateTensors();
-
-      final inputTensor = validationInterpreter.getInputTensor(0);
-
-      final outputTensor = validationInterpreter.getOutputTensor(0);
-
-      final inputShape = inputTensor.shape;
-      final outputShape = outputTensor.shape;
-
-      final inputType = inputTensor.type.toString();
-      final outputType = outputTensor.type.toString();
-
-      log(
-        '📥 Downloaded model input: '
-        '$inputShape $inputType',
-      );
-
-      log(
-        '📤 Downloaded model output: '
-        '$outputShape $outputType',
-      );
-
-      final isCompatible =
-          inputShape.length == 2 &&
-          inputShape[0] == 1 &&
-          inputShape[1] == sequenceLength &&
-          outputShape.length == 2 &&
-          outputShape[0] == 1 &&
-          outputShape[1] == 1 &&
-          inputType.toLowerCase().contains('int32') &&
-          outputType.toLowerCase().contains('float32');
-
-      validationInterpreter.close();
-
-      if (!isCompatible) {
-        throw Exception(
-          'Downloaded SMS model is incompatible with '
-          'the current P.A.R.E. SMS detection service.',
-        );
-      }
-
-      log('✅ Downloaded SMS model passed compatibility check.');
-
-      // --------------------------------------------------------
-      // 3. MOVE VERIFIED MODEL TO ACTIVE MODEL LOCATION
-      // --------------------------------------------------------
-
-      if (await activeFile.exists()) {
-        await activeFile.delete();
-      }
-
-      await tempFile.rename(activeFile.path);
-
-      log(
-        '✅ SMS model saved successfully: '
-        '${activeFile.path}',
-      );
-
-      // --------------------------------------------------------
-      // 4. UPDATE STORED MODEL INFORMATION
-      // --------------------------------------------------------
-
-      final prefs = await SharedPreferences.getInstance();
-
-      await prefs.setString(_activeModelPathKey, activeFile.path);
-
-      await prefs.setInt(_smsModelVersionKey, modelVersion);
-
-      log(
-        '💾 Installed SMS model version: '
-        'v$modelVersion',
-      );
-
-      // --------------------------------------------------------
-      // 5. RELOAD INTERPRETER
-      // --------------------------------------------------------
-
-      _interpreter?.close();
-      _interpreter = null;
-      _isLoaded = false;
-
-      await loadModel();
-
-      log('🎉 SMS model v$modelVersion is now active.');
-
-      return {
-        'success': true,
-        'modelVersion': modelVersion,
-        'path': activeFile.path,
-        'message': 'SMS detection model updated successfully.',
-      };
-    } catch (e, stackTrace) {
-      log('❌ SMS model update failed: $e');
-      log('❌ Stack trace: $stackTrace');
-
-      try {
-        if (tempFile != null && await tempFile.exists()) {
-          await tempFile.delete();
-        }
-      } catch (_) {}
-
-      return {
-        'success': false,
-        'modelVersion': modelVersion,
-        'message': 'SMS detection model update failed.',
-        'error': e.toString(),
-      };
+      return {'success': true, 'modelVersion': modelVersion};
+    } catch (e) {
+      return {'success': false, 'error': e.toString()};
+    } finally {
+      validation?.close();
     }
   }
 
   Future<int> getInstalledModelVersion() async {
-    final prefs = await SharedPreferences.getInstance();
-
-    await prefs.remove(_activeModelPathKey);
-
-    await prefs.setInt(_smsModelVersionKey, defaultSmsModelVersion);
-
-    return defaultSmsModelVersion;
+    await loadModel();
+    return _version;
   }
-
-  // ============================================================
-  // TEXT PROCESSING
-  // ============================================================
-
-  String _cleanText(String text) {
-    return text
-        .toLowerCase()
-        .replaceAll(RegExp(r'http\S+|www\S+'), ' urltoken ')
-        .replaceAll(RegExp(r'\d+'), ' numtoken ')
-        .replaceAll(RegExp(r'[^\w\s]'), ' ')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-  }
-
-  List<int> _textToSequence(String message) {
-    final cleaned = _cleanText(message);
-
-    final words = cleaned.split(' ');
-
-    final sequence = List<int>.filled(sequenceLength, 0);
-
-    for (int i = 0; i < words.length && i < sequenceLength; i++) {
-      sequence[i] = _wordIndex[words[i]] ?? 1;
-    }
-
-    return sequence;
-  }
-
-  // ============================================================
-  // KEYWORD / PATTERN DETECTION
-  // ============================================================
-
-  int _keywordScore(String message) {
-    final text = message.toLowerCase();
-
-    int score = 0;
-
-    // ----------------------------------------------------------
-    // STRONG LINK / PHISHING INDICATORS
-    // ----------------------------------------------------------
-
-    if (text.contains('http') ||
-        text.contains('www.') ||
-        text.contains('.com')) {
-      score += 3;
-    }
-
-    if (text.contains('bit.ly') || text.contains('tinyurl')) {
-      score += 3;
-    }
-
-    // "link" by itself is no longer heavily weighted because
-    // legitimate companies frequently tell users to open links.
-    if (text.contains('link') &&
-        (text.contains('verify') ||
-            text.contains('account') ||
-            text.contains('login') ||
-            text.contains('password'))) {
-      score += 2;
-    }
-
-    // ----------------------------------------------------------
-    // ACCOUNT / CREDENTIAL PHISHING
-    // ----------------------------------------------------------
-
-    if (text.contains('verify')) {
-      score += 2;
-    }
-
-    if (text.contains('confirm')) {
-      score += 1;
-    }
-
-    if (text.contains('validate')) {
-      score += 2;
-    }
-
-    if (text.contains('login')) {
-      score += 1;
-    }
-
-    if (text.contains('sign in')) {
-      score += 1;
-    }
-
-    if (text.contains('enter your')) {
-      score += 2;
-    }
-
-    if (text.contains('submit')) {
-      score += 1;
-    }
-
-    if (text.contains('password')) {
-      score += 3;
-    }
-
-    if (text.contains('pin')) {
-      score += 3;
-    }
-
-    if (text.contains('personal information')) {
-      score += 3;
-    }
-
-    if (text.contains('account number')) {
-      score += 2;
-    }
-
-    if (text.contains('identity')) {
-      score += 2;
-    }
-
-    // ----------------------------------------------------------
-    // OTP
-    // ----------------------------------------------------------
-
-    final hasOtp = text.contains('otp') || text.contains('one-time password');
-
-    final hasShareRequest =
-        text.contains('share your otp') ||
-        text.contains('send your otp') ||
-        text.contains('give your otp') ||
-        text.contains('provide your otp') ||
-        text.contains('tell me your otp');
-
-    final hasOtpInputRequest =
-        text.contains('enter your otp') ||
-        text.contains('input your otp') ||
-        text.contains('submit your otp');
-
-    final hasSuspiciousOtpContext =
-        text.contains('verify') ||
-        text.contains('confirm') ||
-        text.contains('validate') ||
-        text.contains('click') ||
-        text.contains('link') ||
-        text.contains('urgent') ||
-        text.contains('immediately') ||
-        text.contains('account') ||
-        text.contains('suspended') ||
-        text.contains('restricted') ||
-        text.contains('locked');
-
-    if (hasOtp) {
-      if (hasShareRequest) {
-        score += 3;
-      }
-
-      if (hasOtpInputRequest) {
-        score += 2;
-      }
-
-      if (hasSuspiciousOtpContext) {
-        score += 2;
-      }
-    }
-
-    if (text.contains('do not share') &&
-        (hasShareRequest || hasOtpInputRequest)) {
-      score += 1;
-    }
-
-    // ----------------------------------------------------------
-    // URGENCY / THREATS
-    // ----------------------------------------------------------
-
-    if (text.contains('urgent')) {
-      score += 2;
-    }
-
-    if (text.contains('immediately')) {
-      score += 2;
-    }
-
-    if (text.contains('within 12 hours')) {
-      score += 2;
-    }
-
-    if (text.contains('failure to act')) {
-      score += 2;
-    }
-
-    if (text.contains('final warning')) {
-      score += 3;
-    }
-
-    if (text.contains('restricted')) {
-      score += 2;
-    }
-
-    if (text.contains('suspended')) {
-      score += 2;
-    }
-
-    if (text.contains('deactivation')) {
-      score += 2;
-    }
-
-    if (text.contains('blocked')) {
-      score += 1;
-    }
-
-    if (text.contains('locked')) {
-      score += 2;
-    }
-
-    if (text.contains('frozen')) {
-      score += 2;
-    }
-
-    if (text.contains('fund freezing')) {
-      score += 3;
-    }
-
-    if (text.contains('unauthorized')) {
-      score += 2;
-    }
-
-    if (text.contains('suspicious login')) {
-      score += 3;
-    }
-
-    if (text.contains('security alert')) {
-      score += 2;
-    }
-
-    // ----------------------------------------------------------
-    // FINANCIAL / BANKING CONTEXT
-    // ----------------------------------------------------------
-
-    if (text.contains('bank')) {
-      score += 1;
-    }
-
-    if (text.contains('bdo')) {
-      score += 2;
-    }
-
-    if (text.contains('bpi')) {
-      score += 2;
-    }
-
-    if (text.contains('metrobank')) {
-      score += 2;
-    }
-
-    if (text.contains('unionbank')) {
-      score += 2;
-    }
-
-    if (text.contains('gcash')) {
-      score += 1;
-    }
-
-    if (text.contains('maya')) {
-      score += 1;
-    }
-
-    if (text.contains('paymaya')) {
-      score += 1;
-    }
-
-    if (text.contains('wallet')) {
-      score += 1;
-    }
-
-    if (text.contains('transaction')) {
-      score += 1;
-    }
-
-    // ----------------------------------------------------------
-    // REWARD / PRIZE SCAM PATTERNS
-    // ----------------------------------------------------------
-    //
-    // Generic promotional words such as "claim", "reward",
-    // "voucher", "gift", "sale", "offer", etc. are NOT scored
-    // by themselves.
-    //
-    // They receive additional weight only when combined with
-    // stronger scam context.
-    // ----------------------------------------------------------
-
-    final hasPrizeContext =
-        text.contains('prize') ||
-        text.contains('reward') ||
-        text.contains('winner') ||
-        text.contains('you won') ||
-        text.contains('congratulations');
-
-    final hasFinancialRequest =
-        text.contains('send money') ||
-        text.contains('transfer money') ||
-        text.contains('pay now') ||
-        text.contains('payment required') ||
-        text.contains('account number') ||
-        text.contains('personal information');
-
-    if (text.contains('congratulations') && hasPrizeContext) {
-      score += 2;
-    }
-
-    if (text.contains('congrats') && hasPrizeContext) {
-      score += 2;
-    }
-
-    if (text.contains('you won')) {
-      score += 2;
-    }
-
-    if (text.contains('winner')) {
-      score += 2;
-    }
-
-    if (text.contains('prize')) {
-      score += 1;
-    }
-
-    if (text.contains('reward')) {
-      score += 1;
-    }
-
-    // "claim" is only suspicious when combined with a prize,
-    // reward, or financial request.
-    if (text.contains('claim') && (hasPrizeContext || hasFinancialRequest)) {
-      score += 2;
-    }
-
-    // ----------------------------------------------------------
-    // MONEY
-    // ----------------------------------------------------------
-
-    // Currency by itself is NOT enough to indicate a scam.
-    // Legitimate advertisements commonly contain prices.
-    if ((text.contains('₱') || text.contains('php')) &&
-        (hasFinancialRequest ||
-            hasPrizeContext ||
-            text.contains('send') ||
-            text.contains('transfer'))) {
-      score += 2;
-    }
-
-    // ----------------------------------------------------------
-    // FILIPINO SCAM PATTERNS
-    // ----------------------------------------------------------
-
-    if (text.contains('pindutin') &&
-        (text.contains('verify') ||
-            text.contains('login') ||
-            text.contains('account'))) {
-      score += 2;
-    }
-
-    if (text.contains('i-click') || text.contains('iclick')) {
-      score += 2;
-    }
-
-    if (text.contains('mag login') &&
-        (text.contains('account') || text.contains('verify'))) {
-      score += 2;
-    }
-
-    if ((text.contains('mag-register') || text.contains('mag register')) &&
-        (text.contains('account') || text.contains('verify'))) {
-      score += 2;
-    }
-
-    if (text.contains('kunin') && hasPrizeContext) {
-      score += 1;
-    }
-
-    if (text.contains('claim mo') && hasPrizeContext) {
-      score += 2;
-    }
-
-    if (text.contains('panalo') && hasPrizeContext) {
-      score += 2;
-    }
-
-    if (text.contains('nanalo') && hasPrizeContext) {
-      score += 2;
-    }
-
-    if (text.contains('premyo') && hasPrizeContext) {
-      score += 2;
-    }
-
-    if (text.contains('libreng') && hasPrizeContext) {
-      score += 1;
-    }
-
-    // "load" alone is not a scam indicator because legitimate
-    // telecommunications and e-wallet promotions use it.
-    if (text.contains('load') && hasFinancialRequest) {
-      score += 1;
-    }
-
-    if (text.contains('ayuda') && hasFinancialRequest) {
-      score += 1;
-    }
-
-    // ----------------------------------------------------------
-    // COMBINED HIGH-RISK PATTERNS
-    // ----------------------------------------------------------
-
-    if (text.contains('verify') && text.contains('account')) {
-      score += 2;
-    }
-
-    if (text.contains('account') && text.contains('suspended')) {
-      score += 2;
-    }
-
-    if (text.contains('account') && text.contains('locked')) {
-      score += 2;
-    }
-
-    if (text.contains('urgent') &&
-        (text.contains('account') || text.contains('verify'))) {
-      score += 2;
-    }
-
-    if (text.contains('limited time') && hasFinancialRequest) {
-      score += 1;
-    }
-
-    if (text.contains('act now') &&
-        (text.contains('verify') ||
-            text.contains('account') ||
-            hasFinancialRequest)) {
-      score += 2;
-    }
-
-    return score.clamp(0, 20);
-  }
-
-  // ============================================================
-  // PREDICTION
-  // ============================================================
 
   Future<SmsDetectionResult> predict(String message) async {
     await loadModel();
-
-    final sequence = _textToSequence(message);
-
-    final input = [sequence];
-
-    final output = List.generate(1, (_) => List.filled(1, 0.0));
-
-    _interpreter!.run(input, output);
-
-    final probability = (output[0][0] as num).toDouble();
-
-    final score = _keywordScore(message);
-
-    final cleanedText = _cleanText(message);
-
-    final wordCount = cleanedText
-        .split(' ')
-        .where((word) => word.trim().isNotEmpty)
-        .length;
-
-    // Very short messages without suspicious patterns
-    // are treated as legitimate.
-    if (wordCount <= 3 && score == 0) {
-      return SmsDetectionResult(
-        scamProbability: probability,
-        label: "Legit",
-        riskLevel: "LOW",
-        keywordScore: score,
-      );
+    final cleaned = message
+        .toLowerCase()
+        .replaceAll(RegExp(r'http\S+|www\S+'), ' urltoken ')
+        .replaceAll(RegExp(r'\d+'), ' numtoken ')
+        .replaceAll(RegExp(r'[^a-z0-9_\s]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    final tokens = cleaned.isEmpty ? <String>[] : cleaned.split(' ');
+    final input = List<int>.filled(sequenceLength, 0);
+    for (var i = 0; i < tokens.length && i < sequenceLength; i++) {
+      input[i] = _wordIndex[tokens[i]] ?? 1;
     }
-
-    String label;
-    String riskLevel;
-
-    // ==========================================================
-    // HYBRID DECISION
-    // ==========================================================
-    //
-    // ML prediction is the PRIMARY signal.
-    // Keyword/pattern detection provides SUPPORTING evidence.
-    //
-    // Important:
-    // A high keyword score alone should not automatically turn
-    // a very low ML scam probability into HIGH risk.
-    // ==========================================================
-
-    if (probability >= 0.75) {
-      // Strong ML evidence of scam.
-      label = "Scam";
-      riskLevel = "HIGH";
-    } else if (probability >= 0.50) {
-      // Moderate ML probability alone is not enough to trigger
-      // a suspicious classification.
-      //
-      // Require supporting scam-pattern evidence.
-      if (score >= 10) {
-        label = "Scam";
-        riskLevel = "HIGH";
-      } else if (score >= 4) {
-        label = "Suspicious";
-        riskLevel = "MEDIUM";
-      } else {
-        label = "Legit";
-        riskLevel = "LOW";
-      }
-    } else if (probability >= 0.35) {
-      // Lower ML confidence.
-      //
-      // Only very strong scam patterns should make this HIGH.
-      if (score >= 12) {
-        label = "Scam";
-        riskLevel = "HIGH";
-      } else if (score >= 6) {
-        label = "Suspicious";
-        riskLevel = "MEDIUM";
-      } else {
-        label = "Legit";
-        riskLevel = "LOW";
-      }
-    } else {
-      // Low ML scam probability.
-      //
-      // Strong keyword evidence can still flag a message,
-      // but ordinary promotional wording will not.
-      if (score >= 12) {
-        label = "Suspicious";
-        riskLevel = "MEDIUM";
-      } else {
-        label = "Legit";
-        riskLevel = "LOW";
-      }
+    final output = [
+      [0.0],
+    ];
+    _interpreter!.run([input], output);
+    final probability = output[0][0];
+    if (!probability.isFinite || probability < 0 || probability > 1) {
+      throw StateError('Invalid SMS prediction');
     }
-
-    log(
-      '📊 SMS prediction: '
-      'ML=${probability.toStringAsFixed(4)} '
-      'Keywords=$score '
-      'Result=$label '
-      'Risk=$riskLevel',
+    final result = SmsRiskPolicy.assess(
+      message,
+      probability,
+      cautionThreshold: _threshold,
     );
-
     return SmsDetectionResult(
       scamProbability: probability,
-      label: label,
-      riskLevel: riskLevel,
-      keywordScore: score,
+      label: result.label,
+      riskLevel: result.riskLevel,
+      keywordScore: result.evidenceScore,
+      riskScore: result.riskScore,
+      explanation: result.explanation,
+      modelVersion: _version,
     );
   }
 
-  // ============================================================
-  // CLEANUP
-  // ============================================================
-
   void close() {
     _interpreter?.close();
-
     _interpreter = null;
-
-    _isLoaded = false;
   }
 }

@@ -11,6 +11,10 @@ class SmsReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Telephony.Sms.Intents.SMS_RECEIVED_ACTION) {
 
+            val settings = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            if (!settings.getBoolean("flutter.protection_activated", false) ||
+                !settings.getBoolean("flutter.isLoggedIn", false) ||
+                !settings.getBoolean("flutter.msg_detection", true)) return
             val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
 
             if (messages.isNotEmpty()) {
@@ -26,13 +30,17 @@ class SmsReceiver : BroadcastReceiver() {
 
                 // Optional contact name
                 val contactName =
-                    getContactName(context, senderNumber)
+                    try { getContactName(context, senderNumber) } catch (_: SecurityException) { null }
 
-                SmsEventHandler.sendSmsToFlutter(
+                try { SmsEventHandler.enqueue(
+                    context = context.applicationContext,
                     senderNumber = senderNumber,
                     senderName = contactName ?: "",
-                    body = fullBody
+                    body = fullBody,
+                    timestamp = messages[0].timestampMillis
                 )
+                    SmsAnalysisJob.schedule(context.applicationContext)
+                } catch (e: Exception) { android.util.Log.e("PARE", "Could not queue SMS", e) }
             }
         }
     }

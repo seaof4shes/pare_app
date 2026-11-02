@@ -43,3 +43,11 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Local security-rule test dependencies and emulator logs
+tools/security_rules/node_modules/
+*-debug.log
+
+# Local device verification output
+background_verification.log
+app_restore_verification.log

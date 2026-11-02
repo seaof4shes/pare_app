@@ -20,6 +20,8 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
   final _confirmMpinController = TextEditingController();
 
   String? _verificationId;
+  String? _verifiedPhone;
+  String? _requestedPhone;
   bool _otpSent = false;
   bool _otpVerified = false;
   bool _loading = false;
@@ -56,6 +58,9 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
     }
 
     final phone = _formatPhone(rawPhone);
+    _requestedPhone = phone;
+    _otpVerified = false;
+    _verifiedPhone = null;
 
     setState(() => _loading = true);
 
@@ -120,7 +125,8 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
       if (!mounted) return;
 
       setState(() {
-        _otpVerified = true;
+        _verifiedPhone = FirebaseAuth.instance.currentUser?.phoneNumber;
+        _otpVerified = _verifiedPhone == _requestedPhone;
         _loading = false;
       });
 
@@ -149,9 +155,7 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
     }
 
     final currentHash = localUser['mpin_hash'];
-    final newHash = HashHelper.hashMpin(newMpin);
-
-    return currentHash == newHash;
+    return HashHelper.verify(newMpin, currentHash?.toString() ?? '');
   }
 
   Future<void> _resetMpin() async {
@@ -159,7 +163,15 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
     final newMpin = _newMpinController.text.trim();
     final confirmMpin = _confirmMpinController.text.trim();
 
-    if (newMpin.length != 6) {
+    if (!_otpVerified || _verifiedPhone != phone) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Verify this phone number before resetting the MPIN.'),
+        ),
+      );
+      return;
+    }
+    if (!RegExp(r'^\d{6}$').hasMatch(newMpin)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("MPIN must be exactly 6 digits")),
       );

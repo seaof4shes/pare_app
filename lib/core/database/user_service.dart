@@ -1,3 +1,5 @@
+import 'dart:async';
+import '../security/local_crypto_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
@@ -5,8 +7,47 @@ import 'local_database.dart';
 import '../utils/hash_helper.dart';
 
 class UserService {
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final FirebaseAuth _auth = FirebaseAuth.instance;
+  UserService({FirebaseAuth? auth, FirebaseFirestore? firestore})
+    : _auth = auth ?? FirebaseAuth.instance,
+      _firestore = firestore ?? FirebaseFirestore.instance;
+  final _crypto = LocalCryptoService.instance;
+  Future<String> _phoneKey(String phone) => _crypto.lookupKey('phone:$phone');
+  Future<Map<String, dynamic>> _decode(Map<String, dynamic> row) async {
+    final result = Map<String, dynamic>.from(row);
+    for (final field in [
+      'username',
+      'phone_number',
+      'firebase_uid',
+      'mpin_hash',
+    ]) {
+      if (result[field] != null) {
+        result[field] = await _crypto.decryptText(result[field].toString());
+      }
+    }
+    return result;
+  }
+
+  void _requirePhone(String phone) {
+    if (_auth.currentUser?.phoneNumber != phone) {
+      throw StateError('Verify this phone number first');
+    }
+  }
+
+  Future<void> _requireRecentPhone(String phone) async {
+    _requirePhone(phone);
+    final token = await _auth.currentUser!.getIdTokenResult();
+    final authenticatedAt = token.authTime;
+    if (authenticatedAt == null ||
+        DateTime.now().difference(authenticatedAt) >
+            const Duration(minutes: 5)) {
+      throw StateError(
+        'Please verify your phone again before changing the MPIN',
+      );
+    }
+  }
+
+  final FirebaseFirestore _firestore;
+  final FirebaseAuth _auth;
 
   CollectionReference<Map<String, dynamic>> get _users =>
       _firestore.collection('users');
@@ -36,43 +77,30 @@ class UserService {
     required String mpin,
     String? userId,
   }) async {
+    await _requireRecentPhone(phoneNumber);
     final db = await LocalDatabase.instance.database;
-
-    final existing = await db.query(
-      'users',
-      where: 'phone_number = ?',
-      whereArgs: [phoneNumber],
-      limit: 1,
-    );
-
-    final now = DateTime.now().toIso8601String();
-
-    if (existing.isNotEmpty) {
-      await db.update(
-        'users',
-        {
-          'firebase_uid': userId ?? existing.first['firebase_uid'],
-          'username': username,
-          'phone_number': phoneNumber,
-          'mpin_hash': HashHelper.hashMpin(mpin),
-        },
-        where: 'phone_number = ?',
-        whereArgs: [phoneNumber],
-      );
-
-      return existing.first['id'] as int;
-    }
-
-    return await db.insert('users', {
-      'firebase_uid': userId,
-      'username': username,
-      'phone_number': phoneNumber,
-      'mpin_hash': HashHelper.hashMpin(mpin),
-      'created_at': now,
-      'last_login_at': null,
+    final existing = await getUserByPhone(phoneNumber);
+    final values = <String, dynamic>{
+      'firebase_uid': await _crypto.encryptText(_auth.currentUser!.uid),
+      'username': await _crypto.encryptText(username),
+      'phone_number': await _crypto.encryptText(phoneNumber),
+      'username_lookup': await _crypto.lookupKey('username:$username'),
+      'phone_lookup': await _phoneKey(phoneNumber),
+      'mpin_hash': await _crypto.encryptText(await HashHelper.hashMpin(mpin)),
       'failed_mpin_attempts': 0,
       'locked_until': null,
-    });
+    };
+    if (existing != null) {
+      await db.update(
+        'users',
+        values,
+        where: 'id = ?',
+        whereArgs: [existing['id']],
+      );
+      return existing['id'] as int;
+    }
+    values['created_at'] = DateTime.now().toIso8601String();
+    return db.insert('users', values);
   }
 
   // ============================================================
@@ -92,6 +120,7 @@ class UserService {
       );
     }
 
+    _requirePhone(phoneNumber);
     final uid = user.uid;
     final userRef = _users.doc(uid);
 
@@ -122,6 +151,7 @@ class UserService {
 
     if (uid == null) return null;
 
+    if (uid != currentUserId) throw StateError('Account access denied');
     final doc = await _users.doc(uid).get();
 
     if (!doc.exists) return null;
@@ -130,6 +160,7 @@ class UserService {
   }
 
   Future<Map<String, dynamic>?> getUserFromFirestore(String uid) async {
+    if (uid != currentUserId) throw StateError('Account access denied');
     final doc = await _users.doc(uid).get();
 
     if (!doc.exists) return null;
@@ -146,8 +177,8 @@ class UserService {
 
     final result = await db.query(
       'users',
-      where: 'username = ?',
-      whereArgs: [username],
+      where: 'username_lookup = ?',
+      whereArgs: [await _crypto.lookupKey('username:$username')],
       limit: 1,
     );
 
@@ -159,8 +190,8 @@ class UserService {
 
     final result = await db.query(
       'users',
-      where: 'phone_number = ?',
-      whereArgs: [phoneNumber],
+      where: 'phone_lookup = ?',
+      whereArgs: [await _phoneKey(phoneNumber)],
       limit: 1,
     );
 
@@ -172,12 +203,8 @@ class UserService {
   // ============================================================
 
   Future<bool> phoneExistsInFirebase(String phoneNumber) async {
-    final result = await _users
-        .where('phoneNumber', isEqualTo: phoneNumber)
-        .limit(1)
-        .get();
-
-    return result.docs.isNotEmpty;
+    _requirePhone(phoneNumber);
+    return (await _users.doc(_auth.currentUser!.uid).get()).exists;
   }
 
   // ============================================================
@@ -200,6 +227,7 @@ class UserService {
 
     final uid = firebaseUser.uid;
 
+    if (uid != currentUserId) throw StateError('Account access denied');
     final doc = await _users.doc(uid).get();
 
     if (!doc.exists) return false;
@@ -212,8 +240,9 @@ class UserService {
         ? data['username'].toString()
         : 'User';
 
-    final phoneNumber =
-        data['phoneNumber']?.toString() ?? firebaseUser.phoneNumber ?? '';
+    // The verified Firebase identity owns this UID. An older profile may have
+    // a local-format or stale phone string; never use that as auth identity.
+    final phoneNumber = firebaseUser.phoneNumber ?? '';
 
     if (phoneNumber.isEmpty) return false;
 
@@ -261,10 +290,13 @@ class UserService {
     required String phoneNumber,
     required String newMpin,
   }) async {
+    await _requireRecentPhone(phoneNumber);
     final db = await LocalDatabase.instance.database;
 
     final values = {
-      'mpin_hash': HashHelper.hashMpin(newMpin),
+      'mpin_hash': await _crypto.encryptText(
+        await HashHelper.hashMpin(newMpin),
+      ),
       'failed_mpin_attempts': 0,
       'locked_until': null,
     };
@@ -272,8 +304,8 @@ class UserService {
     await db.update(
       'users',
       values,
-      where: 'phone_number = ?',
-      whereArgs: [phoneNumber],
+      where: 'phone_lookup = ?',
+      whereArgs: [await _phoneKey(phoneNumber)],
     );
   }
 
@@ -293,22 +325,8 @@ class UserService {
     required String phoneNumber,
     required String newMpin,
   }) async {
-    final result = await _users
-        .where('phoneNumber', isEqualTo: phoneNumber)
-        .limit(1)
-        .get();
-
-    if (result.docs.isEmpty) {
-      throw FirebaseException(
-        plugin: 'cloud_firestore',
-        code: 'user-not-found',
-        message: 'No Firestore user found for this phone number.',
-      );
-    }
-
-    final userDoc = result.docs.first.reference;
-
-    await userDoc.update({
+    await _requireRecentPhone(phoneNumber);
+    await _users.doc(_auth.currentUser!.uid).update({
       'updatedAt': FieldValue.serverTimestamp(),
       'mpinUpdatedAt': FieldValue.serverTimestamp(),
     });
@@ -340,6 +358,7 @@ class UserService {
     }
 
     if (phoneNumber != null) {
+      _requirePhone(phoneNumber);
       updates['phoneNumber'] = phoneNumber;
     }
 
@@ -412,8 +431,8 @@ class UserService {
     final result = await db.query(
       'users',
       columns: ['locked_until'],
-      where: 'phone_number = ?',
-      whereArgs: [phoneNumber],
+      where: 'phone_lookup = ?',
+      whereArgs: [await _phoneKey(phoneNumber)],
       limit: 1,
     );
 
@@ -439,8 +458,8 @@ class UserService {
     await db.update(
       'users',
       {'failed_mpin_attempts': 0, 'locked_until': null},
-      where: 'phone_number = ?',
-      whereArgs: [phoneNumber],
+      where: 'phone_lookup = ?',
+      whereArgs: [await _phoneKey(phoneNumber)],
     );
 
     return false;
@@ -456,8 +475,8 @@ class UserService {
     final result = await db.query(
       'users',
       columns: ['locked_until'],
-      where: 'phone_number = ?',
-      whereArgs: [phoneNumber],
+      where: 'phone_lookup = ?',
+      whereArgs: [await _phoneKey(phoneNumber)],
       limit: 1,
     );
 
@@ -490,8 +509,8 @@ class UserService {
     final result = await db.query(
       'users',
       columns: ['failed_mpin_attempts'],
-      where: 'phone_number = ?',
-      whereArgs: [phoneNumber],
+      where: 'phone_lookup = ?',
+      whereArgs: [await _phoneKey(phoneNumber)],
       limit: 1,
     );
 
@@ -509,15 +528,15 @@ class UserService {
       await db.update(
         'users',
         {'failed_mpin_attempts': newAttempts, 'locked_until': lockUntil},
-        where: 'phone_number = ?',
-        whereArgs: [phoneNumber],
+        where: 'phone_lookup = ?',
+        whereArgs: [await _phoneKey(phoneNumber)],
       );
     } else {
       await db.update(
         'users',
         {'failed_mpin_attempts': newAttempts},
-        where: 'phone_number = ?',
-        whereArgs: [phoneNumber],
+        where: 'phone_lookup = ?',
+        whereArgs: [await _phoneKey(phoneNumber)],
       );
     }
 
@@ -534,8 +553,8 @@ class UserService {
     await db.update(
       'users',
       {'failed_mpin_attempts': 0, 'locked_until': null},
-      where: 'phone_number = ?',
-      whereArgs: [phoneNumber],
+      where: 'phone_lookup = ?',
+      whereArgs: [await _phoneKey(phoneNumber)],
     );
   }
 
@@ -549,8 +568,8 @@ class UserService {
     await db.update(
       'users',
       {'last_login_at': DateTime.now().toIso8601String()},
-      where: 'phone_number = ?',
-      whereArgs: [phoneNumber],
+      where: 'phone_lookup = ?',
+      whereArgs: [await _phoneKey(phoneNumber)],
     );
   }
 
@@ -561,27 +580,31 @@ class UserService {
   Future<bool> verifyLocalMpin({
     required String usernameOrPhone,
     required String mpin,
-  }) async {
-    final db = await LocalDatabase.instance.database;
-
-    final result = await db.query(
-      'users',
-      where: '''
-        (username = ? OR phone_number = ?)
-        AND mpin_hash = ?
-      ''',
-      whereArgs: [usernameOrPhone, usernameOrPhone, HashHelper.hashMpin(mpin)],
-      limit: 1,
-    );
-
-    return result.isNotEmpty;
-  }
+  }) => loginUser(usernameOrPhone: usernameOrPhone, mpin: mpin);
 
   // ============================================================
   // LOCAL LOGIN / MPIN CHECK WITH SECURITY
   // ============================================================
 
+  static Future<void> _loginQueue = Future.value();
   Future<bool> loginUser({
+    required String usernameOrPhone,
+    required String mpin,
+  }) {
+    final complete = Completer<bool>();
+    _loginQueue = _loginQueue.then((_) async {
+      try {
+        complete.complete(
+          await _loginSerial(usernameOrPhone: usernameOrPhone, mpin: mpin),
+        );
+      } catch (error, stack) {
+        complete.completeError(error, stack);
+      }
+    });
+    return complete.future;
+  }
+
+  Future<bool> _loginSerial({
     required String usernameOrPhone,
     required String mpin,
   }) async {
@@ -589,8 +612,11 @@ class UserService {
 
     final userResult = await db.query(
       'users',
-      where: 'username = ? OR phone_number = ?',
-      whereArgs: [usernameOrPhone, usernameOrPhone],
+      where: 'username_lookup = ? OR phone_lookup = ?',
+      whereArgs: [
+        await _crypto.lookupKey('username:$usernameOrPhone'),
+        await _phoneKey(usernameOrPhone),
+      ],
       limit: 1,
     );
 
@@ -598,21 +624,42 @@ class UserService {
       return false;
     }
 
-    final user = userResult.first;
+    final user = await _decode(userResult.first);
     final phoneNumber = user['phone_number'].toString();
 
     // Check whether account is currently locked.
-    if (await isMpinLocked(phoneNumber)) {
+    final lockedUntil = DateTime.tryParse(
+      user['locked_until']?.toString() ?? '',
+    );
+    if (lockedUntil != null && lockedUntil.isAfter(DateTime.now())) {
       return false;
     }
 
     final storedHash = user['mpin_hash']?.toString();
 
-    final enteredHash = HashHelper.hashMpin(mpin);
-
-    if (storedHash == enteredHash) {
-      await resetMpinAttempts(phoneNumber);
-      await updateLastLogin(phoneNumber);
+    if (storedHash != null && await HashHelper.verify(mpin, storedHash)) {
+      if (!storedHash.startsWith('pbkdf2-sha256:')) {
+        await db.update(
+          'users',
+          {
+            'mpin_hash': await _crypto.encryptText(
+              await HashHelper.hashMpin(mpin),
+            ),
+          },
+          where: 'id = ?',
+          whereArgs: [user['id']],
+        );
+      }
+      await db.update(
+        'users',
+        {
+          'failed_mpin_attempts': 0,
+          'locked_until': null,
+          'last_login_at': DateTime.now().toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [user['id']],
+      );
 
       return true;
     }
@@ -631,14 +678,14 @@ class UserService {
 
     final result = await db.query(
       'users',
-      where: 'phone_number = ?',
-      whereArgs: [phoneNumber],
+      where: 'phone_lookup = ?',
+      whereArgs: [await _phoneKey(phoneNumber)],
       limit: 1,
     );
 
     if (result.isEmpty) return null;
 
-    return result.first;
+    return _decode(result.first);
   }
 
   // ============================================================

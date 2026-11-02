@@ -1,10 +1,13 @@
+import '1_auth/screens/login_screen.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'package:pare_app/features/2_home/screens/home_screen.dart';
 import 'package:pare_app/features/3_history/screens/history_screen.dart';
 import 'package:pare_app/features/4_settings/screens/settings_screen.dart';
+import 'package:pare_app/features/widgets/pare_shell.dart';
 import 'package:pare_app/services/app_update_service.dart';
 import 'package:pare_app/services/notification_service.dart';
 
@@ -15,20 +18,41 @@ class MainNavScreen extends StatefulWidget {
   State<MainNavScreen> createState() => _MainNavScreenState();
 }
 
-class _MainNavScreenState extends State<MainNavScreen> {
+class _MainNavScreenState extends State<MainNavScreen>
+    with WidgetsBindingObserver {
+  DateTime? _backgroundedAt;
   int _selectedIndex = 0;
 
   int? _openHistoryId;
 
   StreamSubscription<String>? _notifSub;
+  StreamSubscription<dynamic>? _wifiSub;
+  DateTime? _lastWifiCheck;
 
   final GlobalKey<HomeScreenState> _homeKey = GlobalKey<HomeScreenState>();
-
-  static const Color primaryBlue = Color(0xFF092C56);
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _wifiSub = const EventChannel('pare_app/wifi')
+        .receiveBroadcastStream()
+        .distinct()
+        .listen(
+          (connected) {
+            if (connected != true || !mounted) return;
+            final now = DateTime.now();
+            if (_lastWifiCheck != null &&
+                now.difference(_lastWifiCheck!) < const Duration(seconds: 30)) {
+              return;
+            }
+            _lastWifiCheck = now;
+            _homeKey.currentState?.refreshUpdateStatus();
+          },
+          onError: (_) {
+            /* Manual/startup checks remain available. */
+          },
+        );
 
     // Listen for notification taps while the app is running.
     _notifSub = NotificationService.onNotificationTap.listen((payload) {
@@ -135,8 +159,29 @@ class _MainNavScreenState extends State<MainNavScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) _backgroundedAt = DateTime.now();
+    if (state == AppLifecycleState.resumed) {
+      final last = _backgroundedAt;
+      _backgroundedAt = null;
+      if (last != null &&
+          DateTime.now().difference(last) >= const Duration(minutes: 2) &&
+          mounted) {
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(
+            builder: (_) => const LoginScreen(unlockMode: true),
+          ),
+          (_) => false,
+        );
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _notifSub?.cancel();
+    _wifiSub?.cancel();
     super.dispose();
   }
 
@@ -161,33 +206,19 @@ class _MainNavScreenState extends State<MainNavScreen> {
     final screens = [
       HomeScreen(key: _homeKey),
       HistoryScreen(openHistoryId: _openHistoryId),
-      const SettingsScreen(),
+      SettingsScreen(
+        onSettingsChanged: () {
+          _homeKey.currentState?.refreshHomeSettings();
+        },
+      ),
     ];
 
     return Scaffold(
+      backgroundColor: const Color(0xFFF6F8FB),
       body: IndexedStack(index: _selectedIndex, children: screens),
-      bottomNavigationBar: BottomNavigationBar(
+      bottomNavigationBar: PareBottomNav(
         currentIndex: _selectedIndex,
         onTap: _onNavTap,
-        backgroundColor: Colors.white,
-        selectedItemColor: primaryBlue,
-        unselectedItemColor: Colors.grey,
-        selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w700),
-        type: BottomNavigationBarType.fixed,
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.home_rounded),
-            label: "Home",
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.history_rounded),
-            label: "History",
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.settings_rounded),
-            label: "Settings",
-          ),
-        ],
       ),
     );
   }

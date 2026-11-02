@@ -1,19 +1,22 @@
 import 'dart:developer';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 
 import 'package:ffmpeg_kit_flutter_new_audio/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_audio/return_code.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter_litert/flutter_litert.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:path/path.dart' as path;
+import 'package:pare_app/core/security/private_preferences.dart';
 
 import 'voice_mfcc_extractor.dart';
 
 class VoiceDetectionService {
   Interpreter? _interpreter;
+  int? _loadedVersion;
   FlexDelegate? _flexDelegate;
-  final VoiceMfccExtractor _extractor = VoiceMfccExtractor();
+  Future<void>? _loading;
 
   // ── Thresholds ────────────────────────────────────────────────────────────
   // fakeScore is sigmoid output:
@@ -46,13 +49,27 @@ class VoiceDetectionService {
   // MODEL
   // ─────────────────────────────────────────────────────────────────────────
 
-  Future<void> loadModel() async {
-    if (_interpreter != null) return;
+  Future<int> getInstalledModelVersion() async {
+    final prefs = await PrivatePreferences.getInstance();
+    final version = prefs.getInt('voice_model_version') ?? _defaultModelVersion;
+    if (version <= _defaultModelVersion) return _defaultModelVersion;
+    final directory = await getApplicationDocumentsDirectory();
+    final file = File('${directory.path}/voice_model_v$version.tflite');
+    return await file.exists() && await file.length() > 0
+        ? version
+        : _defaultModelVersion;
+  }
 
-    final prefs = await SharedPreferences.getInstance();
+  Future<void> loadModel() =>
+      _loading ??= _loadModel().whenComplete(() => _loading = null);
+
+  Future<void> _loadModel() async {
+    final prefs = await PrivatePreferences.getInstance();
 
     final installedVersion =
         prefs.getInt('voice_model_version') ?? _defaultModelVersion;
+
+    if (_interpreter != null && _loadedVersion == installedVersion) return;
 
     final appDirectory = await getApplicationDocumentsDirectory();
 
@@ -94,18 +111,36 @@ class VoiceDetectionService {
       log('════════════════════════════════════');
     }
 
-    _flexDelegate = await FlexDelegate.create();
-
-    final options = InterpreterOptions();
-    options.addDelegate(_flexDelegate!);
-
-    if (usingDownloadedModel) {
-      _interpreter = Interpreter.fromFile(File(modelSource), options: options);
-    } else {
-      _interpreter = await Interpreter.fromAsset(
+    final delegate = await FlexDelegate.create();
+    final options = InterpreterOptions()..addDelegate(delegate);
+    Interpreter? candidate;
+    try {
+      if (usingDownloadedModel) {
+        try {
+          candidate = Interpreter.fromFile(File(modelSource), options: options);
+          _validateVoice(candidate);
+        } catch (_) {
+          candidate?.close();
+          candidate = null;
+          usingDownloadedModel = false;
+        }
+      }
+      candidate ??= await Interpreter.fromAsset(
         _defaultModelAsset,
         options: options,
       );
+      _validateVoice(candidate);
+      close();
+      _interpreter = candidate;
+      _flexDelegate = delegate;
+      _loadedVersion = usingDownloadedModel
+          ? installedVersion
+          : _defaultModelVersion;
+      await prefs.setInt('voice_model_version', _loadedVersion!);
+    } catch (_) {
+      candidate?.close();
+      delegate.delete();
+      rethrow;
     }
 
     if (_debugMode) {
@@ -117,78 +152,56 @@ class VoiceDetectionService {
   // VOICE MODEL UPDATE
   // ─────────────────────────────────────────────────────────────────────────
 
+  void _validateVoice(Interpreter model) {
+    model.allocateTensors();
+    final input = model.getInputTensor(0);
+    final output = model.getOutputTensor(0);
+    if (input.shape.join(',') != '1,40,157,2' ||
+        output.shape.join(',') != '1,1' ||
+        !input.type.toString().toLowerCase().contains('float32') ||
+        !output.type.toString().toLowerCase().contains('float32')) {
+      throw const FormatException('Incompatible voice model');
+    }
+    final result = [
+      [0.0],
+    ];
+    model.run(List.filled(40 * 157 * 2, 0.0).reshape([1, 40, 157, 2]), result);
+    if (!result[0][0].isFinite || result[0][0] < 0 || result[0][0] > 1) {
+      throw const FormatException('Invalid voice model output');
+    }
+  }
+
   Future<bool> installDownloadedModel({
     required String modelPath,
     required int modelVersion,
   }) async {
+    Interpreter? candidate;
+    FlexDelegate? delegate;
     try {
-      final sourceFile = File(modelPath);
-
-      if (!await sourceFile.exists()) {
-        log('❌ Voice model update failed: source file does not exist.');
+      final prefs = await PrivatePreferences.getInstance();
+      final installed =
+          prefs.getInt('voice_model_version') ?? _defaultModelVersion;
+      if (modelVersion <= installed || modelVersion <= _defaultModelVersion) {
         return false;
       }
-
-      if (modelVersion <= _defaultModelVersion) {
-        log(
-          '⚠️ Voice model v$modelVersion is not newer than '
-          'bundled v$_defaultModelVersion.',
-        );
+      delegate = await FlexDelegate.create();
+      final options = InterpreterOptions()..addDelegate(delegate);
+      candidate = Interpreter.fromFile(File(modelPath), options: options);
+      _validateVoice(candidate);
+      final dir = await getApplicationDocumentsDirectory();
+      final target = File('${dir.path}/voice_model_v$modelVersion.tflite');
+      await File(modelPath).copy(target.path);
+      if (!await prefs.setInt('voice_model_version', modelVersion)) {
         return false;
       }
-
-      final appDirectory = await getApplicationDocumentsDirectory();
-
-      final destinationPath =
-          '${appDirectory.path}/voice_model_v$modelVersion.tflite';
-
-      final destinationFile = File(destinationPath);
-
-      /*
-       * Close the currently loaded interpreter before replacing the model.
-       */
-      close();
-
-      /*
-       * Copy the downloaded model into the app's private storage.
-       */
-      await sourceFile.copy(destinationPath);
-
-      /*
-       * Verify that the copied file actually exists and is not empty.
-       */
-      if (!await destinationFile.exists()) {
-        log('❌ Voice model destination file was not created.');
-        return false;
-      }
-
-      final fileSize = await destinationFile.length();
-
-      if (fileSize <= 0) {
-        log('❌ Voice model file is empty.');
-        return false;
-      }
-
-      /*
-       * Save the installed model version.
-       */
-      final prefs = await SharedPreferences.getInstance();
-
-      await prefs.setInt('voice_model_version', modelVersion);
-
-      /*
-       * Load the new model immediately so the current app session can use it.
-       */
-      await loadModel();
-
-      log('✅ Voice model v$modelVersion installed successfully.');
-
+      // Other service instances see the version change on their next analysis.
       return true;
-    } catch (e, stackTrace) {
-      log('❌ VOICE MODEL INSTALL ERROR: $e');
-      log('❌ VOICE MODEL INSTALL STACK TRACE: $stackTrace');
-
+    } catch (e) {
+      log('Voice update rejected; previous model retained: $e');
       return false;
+    } finally {
+      candidate?.close();
+      delegate?.delete();
     }
   }
 
@@ -304,17 +317,16 @@ class VoiceDetectionService {
     try {
       await loadModel();
 
-      final features = await _extractor.extractFromWav(wavPath);
+      final extracted = await compute(_extractVoiceFeatures, wavPath);
+      final features = extracted.$1;
 
-      await _deleteFile(wavPath);
-
-      if (_isSilence(features)) {
+      if (extracted.$2 < _silenceRmsThreshold) {
         return {
           'label': 'No Voice Detected',
           'result': -1,
           'confidence': 0.0,
           'fakeScore': 0.0,
-          'safe': true,
+          'safe': false,
           'action': 'Skipped – silence detected',
         };
       }
@@ -329,6 +341,9 @@ class VoiceDetectionService {
       _interpreter!.run(input, output);
 
       final double fakeScore = (output[0][0] as num).toDouble();
+      if (!fakeScore.isFinite || fakeScore < 0 || fakeScore > 1) {
+        throw StateError('Invalid voice model output');
+      }
 
       if (_debugMode) {
         log('════════════════════════════════════');
@@ -402,10 +417,7 @@ class VoiceDetectionService {
     String? convertedPath;
 
     try {
-      log(
-        '📁 Starting uploaded audio analysis: '
-        '${fileName ?? inputPath}',
-      );
+      log('Starting uploaded audio analysis');
 
       final inputFile = File(inputPath);
 
@@ -421,8 +433,6 @@ class VoiceDetectionService {
           '${tempDirectory.path}/pare_voice_converted_$timestamp.wav';
 
       log('🎵 Converting uploaded audio...');
-      log('📥 Input: $inputPath');
-      log('📤 Output: $convertedPath');
 
       /*
        * Convert ANY supported input audio into the exact format required
@@ -448,11 +458,8 @@ class VoiceDetectionService {
       final returnCode = await session.getReturnCode();
 
       if (!ReturnCode.isSuccess(returnCode)) {
-        final output = await session.getOutput();
-
         log('❌ FFmpeg conversion failed.');
         log('❌ Return code: $returnCode');
-        log('❌ FFmpeg output: $output');
 
         throw Exception('Unable to convert the selected audio file.');
       }
@@ -482,11 +489,6 @@ class VoiceDetectionService {
        * voice model is currently installed.
        */
       final result = await analyzeWavFile(convertedPath);
-
-      /*
-       * analyzeWavFile() already deletes the converted WAV.
-       */
-      convertedPath = null;
 
       /*
        * Preserve uploaded-file information.
@@ -537,10 +539,11 @@ class VoiceDetectionService {
         await _deleteFile(convertedPath);
       }
 
-      /*
-       * Also clean up the original picker cache file.
-       */
-      await _deleteFile(inputPath);
+      // Only delete copies inside this app's cache; preserve user-owned files.
+      final cache = await getTemporaryDirectory();
+      if (path.isWithin(cache.absolute.path, File(inputPath).absolute.path)) {
+        await _deleteFile(inputPath);
+      }
     }
   }
 
@@ -555,16 +558,6 @@ class VoiceDetectionService {
   // ─────────────────────────────────────────────────────────────────────────
   // SILENCE DETECTION
   // ─────────────────────────────────────────────────────────────────────────
-
-  bool _isSilence(List<double> features) {
-    double sumSq = 0;
-
-    for (final v in features) {
-      sumSq += v * v;
-    }
-
-    return (sumSq / features.length) < _silenceRmsThreshold;
-  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // FILE CLEANUP
@@ -593,4 +586,11 @@ class VoiceDetectionService {
     _flexDelegate?.delete();
     _flexDelegate = null;
   }
+}
+
+// Feature extraction is CPU intensive and must not block Flutter animations.
+Future<(Float32List, double)> _extractVoiceFeatures(String path) async {
+  final extractor = VoiceMfccExtractor();
+  final features = await extractor.extractFromWav(path);
+  return (features, extractor.lastAudioRms);
 }

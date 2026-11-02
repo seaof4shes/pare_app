@@ -3,6 +3,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 class VoiceMfccExtractor {
+  double lastAudioRms = 0;
   static const int sampleRate = 16000;
   static const int targetSamples = 80000; // 5 seconds
   static const int nMfcc = 40;
@@ -31,6 +32,9 @@ class VoiceMfccExtractor {
 
     List<double> audio = wav.samples;
     final int originalSampleRate = wav.sampleRate;
+    lastAudioRms = audio.isEmpty
+        ? 0
+        : sqrt(audio.fold<double>(0, (sum, x) => sum + x * x) / audio.length);
 
     // ------------------------------------------------------------
     // Resample to 16 kHz if necessary

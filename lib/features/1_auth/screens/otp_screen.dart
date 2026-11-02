@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:pare_app/core/security/private_preferences.dart';
 
 import 'package:pare_app/core/database/user_service.dart';
 import 'package:pare_app/features/main_nav_screen.dart';
@@ -17,6 +17,7 @@ class OtpScreen extends StatefulWidget {
   final bool isLogin;
   final String? username;
   final String? pin;
+  final FirebaseAuth? auth;
 
   const OtpScreen({
     super.key,
@@ -26,6 +27,7 @@ class OtpScreen extends StatefulWidget {
     this.isLogin = false,
     this.username,
     this.pin,
+    this.auth,
   });
 
   @override
@@ -45,6 +47,8 @@ class _OtpScreenState extends State<OtpScreen> {
   int _secondsLeft = 0;
   bool _canResend = true;
   bool _isVerifying = false;
+  bool _isResending = false;
+  int? _resendToken;
 
   late String _verificationId;
 
@@ -53,6 +57,7 @@ class _OtpScreenState extends State<OtpScreen> {
   static const Color whiteText = Color(0xFFF0F5F4);
 
   String get _otp => _controllers.map((e) => e.text).join();
+  FirebaseAuth get _auth => widget.auth ?? FirebaseAuth.instance;
 
   String get _maskedPhone {
     final p = widget.phone;
@@ -100,11 +105,12 @@ class _OtpScreenState extends State<OtpScreen> {
         return;
       }
 
-      if (_secondsLeft == 0) {
+      if (_secondsLeft <= 1) {
         timer.cancel();
 
         setState(() {
           _canResend = true;
+          _secondsLeft = 0;
         });
       } else {
         setState(() {
@@ -132,12 +138,6 @@ class _OtpScreenState extends State<OtpScreen> {
     if (!widget.isSignUp) {
       return;
     }
-
-    await UserService().createUser(
-      username: widget.username ?? '',
-      phoneNumber: widget.phone,
-      mpin: widget.pin ?? '',
-    );
 
     await UserService().syncUserToFirestore(
       username: widget.username ?? '',
@@ -171,7 +171,7 @@ class _OtpScreenState extends State<OtpScreen> {
     }
 
     // Fresh installation: Firebase account should already exist.
-    final firebaseUser = FirebaseAuth.instance.currentUser;
+    final firebaseUser = _auth.currentUser;
 
     if (firebaseUser == null) {
       throw Exception('Firebase authentication was not completed.');
@@ -196,7 +196,10 @@ class _OtpScreenState extends State<OtpScreen> {
 
   /// Completes the local session after successful OTP verification.
   Future<void> _completeAuthentication() async {
-    final prefs = await SharedPreferences.getInstance();
+    if (_auth.currentUser?.phoneNumber != widget.phone) {
+      throw StateError('Phone verification does not match this account');
+    }
+    final prefs = await PrivatePreferences.getInstance();
 
     await prefs.setString('phone', widget.phone);
 
@@ -230,8 +233,13 @@ class _OtpScreenState extends State<OtpScreen> {
   Future<void> _handleAutomaticVerification(
     PhoneAuthCredential credential,
   ) async {
+    if (_isVerifying || !mounted) return;
+    setState(() {
+      _isVerifying = true;
+      _isResending = false;
+    });
     try {
-      await FirebaseAuth.instance.signInWithCredential(credential);
+      await _auth.signInWithCredential(credential);
 
       // Signup creates the account normally.
       await _saveUserIfSignUp();
@@ -258,53 +266,70 @@ class _OtpScreenState extends State<OtpScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
       );
+    } finally {
+      if (mounted) setState(() => _isVerifying = false);
     }
   }
 
   Future<void> _resendOtp() async {
-    if (!_canResend) {
+    if (!_canResend || _isResending || _isVerifying) {
       return;
     }
 
     _clearOtpFields();
+    setState(() => _isResending = true);
 
-    await FirebaseAuth.instance.verifyPhoneNumber(
-      phoneNumber: widget.phone,
+    try {
+      await _auth.verifyPhoneNumber(
+        phoneNumber: widget.phone,
+        forceResendingToken: _resendToken,
 
-      verificationCompleted: (PhoneAuthCredential credential) async {
-        await _handleAutomaticVerification(credential);
-      },
+        verificationCompleted: (PhoneAuthCredential credential) async {
+          await _handleAutomaticVerification(credential);
+        },
 
-      verificationFailed: (FirebaseAuthException e) {
-        if (!mounted) {
-          return;
-        }
+        verificationFailed: (FirebaseAuthException e) {
+          if (!mounted) {
+            return;
+          }
+          setState(() => _isResending = false);
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("Error: ${e.message ?? 'Failed to resend OTP'}"),
-          ),
-        );
-      },
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("Error: ${e.message ?? 'Failed to resend OTP'}"),
+            ),
+          );
+        },
 
-      codeSent: (String verificationId, int? resendToken) {
-        _verificationId = verificationId;
+        codeSent: (String verificationId, int? resendToken) {
+          _verificationId = verificationId;
+          _resendToken = resendToken;
 
-        if (!mounted) {
-          return;
-        }
+          if (!mounted) {
+            return;
+          }
 
-        _startTimer();
+          _startTimer();
+          setState(() => _isResending = false);
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("OTP resent successfully")),
-        );
-      },
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("OTP resent successfully")),
+          );
+        },
 
-      codeAutoRetrievalTimeout: (String verificationId) {
-        _verificationId = verificationId;
-      },
-    );
+        codeAutoRetrievalTimeout: (String verificationId) {
+          _verificationId = verificationId;
+        },
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isResending = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not request another code. Please try again.'),
+        ),
+      );
+    }
   }
 
   Future<void> _verifyOtp() async {
@@ -318,7 +343,7 @@ class _OtpScreenState extends State<OtpScreen> {
       return;
     }
 
-    if (_isVerifying) {
+    if (_isVerifying || _isResending) {
       return;
     }
 
@@ -333,7 +358,7 @@ class _OtpScreenState extends State<OtpScreen> {
       );
 
       // Firebase verifies the phone number.
-      await FirebaseAuth.instance.signInWithCredential(credential);
+      await _auth.signInWithCredential(credential);
 
       // Signup flow remains unchanged.
       await _saveUserIfSignUp();
@@ -510,9 +535,16 @@ class _OtpScreenState extends State<OtpScreen> {
                                   ),
                                 ),
                                 GestureDetector(
-                                  onTap: _canResend ? _resendOtp : null,
+                                  onTap:
+                                      _canResend &&
+                                          !_isResending &&
+                                          !_isVerifying
+                                      ? _resendOtp
+                                      : null,
                                   child: Text(
-                                    _canResend
+                                    _isResending
+                                        ? 'Sending…'
+                                        : _canResend
                                         ? "Resend OTP"
                                         : "${_secondsLeft}s",
                                     style: TextStyle(
@@ -535,7 +567,9 @@ class _OtpScreenState extends State<OtpScreen> {
                         width: 300,
                         height: 60,
                         child: ElevatedButton(
-                          onPressed: _isVerifying ? null : _verifyOtp,
+                          onPressed: _isVerifying || _isResending
+                              ? null
+                              : _verifyOtp,
                           style: ElevatedButton.styleFrom(
                             backgroundColor: primaryBlue,
                             disabledBackgroundColor: Colors.grey,

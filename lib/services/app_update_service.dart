@@ -1,14 +1,15 @@
+import '../core/ml/voice_detection_service.dart';
+import '../core/ml/sms_detection_service.dart';
 import 'dart:developer';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 class AppUpdateService {
+  static Future<Map<String, dynamic>>? _pendingCheck;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
   // Must match the key used by SmsDetectionService.
-  static const String _smsModelVersionKey = 'pare_installed_sms_model_version';
 
   // Current bundled/default voice model.
   // Keep this at 4 until the voice-model update system is implemented.
@@ -51,7 +52,10 @@ class AppUpdateService {
 
   /// Compares the installed P.A.R.E. application and model versions
   /// against the latest versions stored in Firestore.
-  Future<Map<String, dynamic>> checkForUpdates() async {
+  Future<Map<String, dynamic>> checkForUpdates() => _pendingCheck ??=
+      _checkForUpdates().whenComplete(() => _pendingCheck = null);
+
+  Future<Map<String, dynamic>> _checkForUpdates() async {
     log('🔍 Comparing installed versions with latest versions...');
 
     try {
@@ -79,9 +83,11 @@ class AppUpdateService {
       // If no downloaded model has ever been installed, the default
       // bundled SMS model is Version 1.
       // ------------------------------------------------------------
-      final prefs = await SharedPreferences.getInstance();
 
-      final installedSmsModelVersion = prefs.getInt(_smsModelVersionKey) ?? 1;
+      final smsService = SmsDetectionService();
+      final installedSmsModelVersion = await smsService
+          .getInstalledModelVersion();
+      smsService.close();
 
       log(
         '📩 Installed SMS Model Version: '
@@ -98,8 +104,10 @@ class AppUpdateService {
       // If no downloaded voice model has ever been installed, the
       // bundled/default voice model is Version 4.
       // ------------------------------------------------------------
-      final installedVoiceModelVersion =
-          prefs.getInt('voice_model_version') ?? defaultVoiceModelVersion;
+      final voiceService = VoiceDetectionService();
+      final installedVoiceModelVersion = await voiceService
+          .getInstalledModelVersion();
+      voiceService.close();
 
       // ------------------------------------------------------------
       // 4. Get latest update information from Firestore

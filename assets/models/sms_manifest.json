@@ -1,0 +1,8 @@
+{
+  "version": 4,
+  "sequenceLength": 200,
+  "preprocessing": "ascii_url_number_v1",
+  "cautionThreshold": 0.6000000000000001,
+  "modelSha256": "a5ae20784bef5e1aa2eebbd7f2cd67245b6919a8db710550de11c8b45e34f7ef",
+  "vocabSha256": "55fc19c02e916c1488afccedb7fce8897e23c3a1988e115d27b51e26dfaa7834"
+}

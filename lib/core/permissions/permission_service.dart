@@ -1,21 +1,24 @@
+import '../security/private_preferences.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 class PermissionService {
   Future<bool> requestAllProtectionPermissions() async {
-    final statuses = await [
-      Permission.sms,
-      Permission.microphone,
-      Permission.contacts,
-      Permission.notification,
-    ].request();
-
-    final smsGranted = statuses[Permission.sms]?.isGranted ?? false;
-    final micGranted = statuses[Permission.microphone]?.isGranted ?? false;
-    final contactsGranted = statuses[Permission.contacts]?.isGranted ?? false;
-    final notificationGranted =
-        statuses[Permission.notification]?.isGranted ?? false;
-
-    return smsGranted && micGranted && contactsGranted && notificationGranted;
+    final prefs = await PrivatePreferences.getInstance();
+    final sms = prefs.getBool('msg_detection') ?? true;
+    final voice = prefs.getBool('call_detection') ?? true;
+    if (!sms && !voice) return false;
+    final requiredPermissions = <Permission>[
+      if (sms) Permission.sms,
+      if (voice) Permission.microphone,
+      if (voice) Permission.phone,
+    ];
+    final statuses = await requiredPermissions.request();
+    // Names and notifications enhance the experience but are not prerequisites
+    // for locally analyzing a message. Denied alerts remain visible in settings.
+    await Permission.notification.request();
+    return requiredPermissions.every(
+      (permission) => statuses[permission]?.isGranted ?? false,
+    );
   }
 
   Future<bool> requestSmsPermissions() async {

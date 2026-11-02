@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'voice_recording_service.dart';
 import 'voice_detection_service.dart';
 
@@ -22,7 +23,7 @@ class CallAnalysisService {
           'result': -1,
           'confidence': 0.0,
           'fakeScore': 0.0,
-          'safe': true,
+          'safe': false,
           'action': 'No audio captured',
         };
       } else {
@@ -37,6 +38,13 @@ class CallAnalysisService {
         'safe': false,
         'action': isDemo ? 'Demo Logged Only' : 'Call Logged Only',
       };
+    }
+
+    if (wavPath != null) {
+      final temporaryRecording = File(wavPath);
+      if (await temporaryRecording.exists()) {
+        await temporaryRecording.delete();
+      }
     }
 
     final String historyType = isDemo ? 'Voice Demo Test' : 'Voice Call';

@@ -1,0 +1,29 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function owns(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+    function validProfile() {
+      return request.resource.data.keys().hasOnly(['username', 'phoneNumber', 'createdAt', 'updatedAt', 'mpinUpdatedAt'])
+        && request.resource.data.username is string
+        && request.resource.data.username.size() > 0
+        && request.resource.data.username.size() <= 60
+        && request.resource.data.phoneNumber == request.auth.token.phone_number
+        && request.resource.data.updatedAt == request.time;
+    }
+    match /users/{uid} {
+      allow get: if owns(uid);
+      allow list: if false;
+      allow create: if owns(uid) && validProfile() && request.resource.data.createdAt == request.time;
+      allow update: if owns(uid) && validProfile()
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if owns(uid);
+    }
+    match /app_updates/{document} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

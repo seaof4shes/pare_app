@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:pare_app/core/security/private_preferences.dart';
 
 class NotificationService {
   static final FlutterLocalNotificationsPlugin _notifications =
@@ -66,13 +66,19 @@ class NotificationService {
     return payload;
   }
 
-  static Future<void> showScamSmsNotification({
+  static Future<bool> showScamSmsNotification({
     required String sender,
     required String message,
     required String payload,
     required String riskLevel,
   }) async {
-    final prefs = await SharedPreferences.getInstance();
+    final allowed = await _notifications
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >()
+        ?.areNotificationsEnabled();
+    if (allowed == false) return false;
+    final prefs = await PrivatePreferences.getInstance();
 
     final soundEnabled = prefs.getBool('notif_sound') ?? true;
     final vibrateEnabled = prefs.getBool('notif_vibrate') ?? true;
@@ -88,6 +94,7 @@ class NotificationService {
       priority: Priority.high,
       playSound: soundEnabled,
       enableVibration: vibrateEnabled,
+      visibility: NotificationVisibility.private,
     );
 
     final details = NotificationDetails(android: androidDetails);
@@ -103,12 +110,19 @@ class NotificationService {
               'Tap to check details.';
 
     await _notifications.show(
-      DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      int.tryParse(payload) ??
+          (DateTime.now().millisecondsSinceEpoch % 2147483647),
       title,
       body,
       details,
       payload: payload,
     );
+    return true;
+  }
+
+  static Future<void> clearForLogout() async {
+    _pendingNotificationPayload = null;
+    await _notifications.cancelAll();
   }
 
   static void dispose() {
