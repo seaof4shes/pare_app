@@ -52,18 +52,23 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final prefs = await PrivatePreferences.getInstance();
       final phone = prefs.getString('phone') ?? '';
+
       if (phone.isEmpty) return;
+
       final trusted = !requiresLoginOtp(
         localAccountExists: await UserService().phoneExists(phone),
         phone: phone,
         authenticatedPhone: FirebaseAuth.instance.currentUser?.phoneNumber,
         verificationRequired: prefs.getBool('requireOtp') ?? false,
       );
+
       if (mounted) {
-        // The field shows "+63" already, so only the 10 digits go inside.
+        // The field displays +63 separately, so only the 10 digits
+        // should be placed inside the controller.
         _phoneController.text = phone.startsWith('+63')
             ? phone.substring(3)
             : phone;
+
         setState(() {
           _returningAccount = trusted;
           _username = prefs.getString('username') ?? '';
@@ -83,16 +88,10 @@ class _LoginScreenState extends State<LoginScreen> {
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
-  /// Accepts "9XXXXXXXXX" or "09XXXXXXXXX" and returns "09XXXXXXXXX".
-  String _normalizePhone(String v) {
-    if (v.length == 10 && v.startsWith('9')) return '0$v';
-    return v;
-  }
-
+  /// Accepts exactly 10 digits starting with 9.
+  /// Converts 9123456789 into +639123456789 for Firebase.
   String _formatPhone(String rawPhone) {
-    return rawPhone.startsWith('0')
-        ? '+63${rawPhone.substring(1)}'
-        : '+63$rawPhone';
+    return '+63$rawPhone';
   }
 
   void _useAnotherAccount() {
@@ -103,26 +102,33 @@ class _LoginScreenState extends State<LoginScreen> {
     });
   }
 
-  // ─── Login logic (unchanged behavior) ──────────────────────────────────────
+  // ─── Login logic ───────────────────────────────────────────────────────────
 
   Future<void> _onLogin() async {
     if (_isSendingOtp) return;
+
     setState(() => _autoValidate = true);
 
     if (!_formKey.currentState!.validate()) {
       return;
     }
 
-    final rawPhone = _normalizePhone(_phoneController.text.trim());
+    final rawPhone = _phoneController.text.trim();
     final pin = _pinController.text.trim();
 
-    if (!rawPhone.startsWith('09')) {
+    // Strict validation: exactly 10 digits, starting with 9.
+    if (!RegExp(r'^9\d{9}$').hasMatch(rawPhone)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Phone number must start with 09")),
+        const SnackBar(
+          content: Text(
+            'Enter a valid 10-digit mobile number starting with 9.',
+          ),
+        ),
       );
       return;
     }
 
+    // Convert the validated number into international format.
     final phone = _formatPhone(rawPhone);
 
     setState(() => _isSendingOtp = true);
@@ -147,6 +153,7 @@ class _LoginScreenState extends State<LoginScreen> {
           verificationCompleted: (PhoneAuthCredential credential) async {
             try {
               await FirebaseAuth.instance.signInWithCredential(credential);
+
               if (FirebaseAuth.instance.currentUser?.phoneNumber != phone) {
                 throw StateError(
                   'Phone verification did not match this account',
@@ -158,7 +165,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
               if (!restored) {
                 throw Exception(
-                  "Unable to restore the PARE account from Firebase.",
+                  'Unable to restore the PARE account from Firebase.',
                 );
               }
 
@@ -188,7 +195,7 @@ class _LoginScreenState extends State<LoginScreen> {
               setState(() => _isSendingOtp = false);
 
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text("Account restoration failed: $e")),
+                SnackBar(content: Text('Account restoration failed: $e')),
               );
             }
           },
@@ -200,7 +207,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text("Unable to send OTP: ${e.message ?? e.code}"),
+                content: Text('Unable to send OTP: ${e.message ?? e.code}'),
               ),
             );
           },
@@ -249,14 +256,14 @@ class _LoginScreenState extends State<LoginScreen> {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text(
-                "Too many incorrect PIN attempts. Please try again later.",
+                'Too many incorrect PIN attempts. Please try again later.',
               ),
             ),
           );
         } else {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(const SnackBar(content: Text("Incorrect PIN")));
+          ).showSnackBar(const SnackBar(content: Text('Incorrect PIN')));
         }
 
         return;
@@ -306,6 +313,7 @@ class _LoginScreenState extends State<LoginScreen> {
         verificationCompleted: (PhoneAuthCredential credential) async {
           try {
             await FirebaseAuth.instance.signInWithCredential(credential);
+
             if (FirebaseAuth.instance.currentUser?.phoneNumber != phone) {
               throw StateError('Phone verification did not match this account');
             }
@@ -335,7 +343,7 @@ class _LoginScreenState extends State<LoginScreen> {
             setState(() => _isSendingOtp = false);
 
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text("Automatic verification failed: $e")),
+              SnackBar(content: Text('Automatic verification failed: $e')),
             );
           }
         },
@@ -347,7 +355,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text("Unable to send OTP: ${e.message ?? e.code}"),
+              content: Text('Unable to send OTP: ${e.message ?? e.code}'),
             ),
           );
         },
@@ -372,7 +380,7 @@ class _LoginScreenState extends State<LoginScreen> {
         },
 
         codeAutoRetrievalTimeout: (String verificationId) {
-          // OtpScreen handles the OTP entry.
+          // OtpScreen handles manual OTP entry.
         },
       );
     } catch (e) {
@@ -382,7 +390,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text("Login error: $e")));
+      ).showSnackBar(SnackBar(content: Text('Login error: $e')));
     }
   }
 
@@ -390,6 +398,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Widget _hero(double height) {
     final title = _returningAccount ? 'Welcome back!' : 'Hello!';
+
     final subtitle = _returningAccount
         ? (_username.isNotEmpty
               ? 'Hi $_username, enter your MPIN'
@@ -482,8 +491,11 @@ class _LoginScreenState extends State<LoginScreen> {
     return TextFormField(
       controller: _phoneController,
       keyboardType: TextInputType.number,
-      maxLength: 11,
-      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+      maxLength: 10,
+      inputFormatters: [
+        FilteringTextInputFormatter.digitsOnly,
+        LengthLimitingTextInputFormatter(10),
+      ],
       style: const TextStyle(
         color: inkColor,
         fontSize: 15,
@@ -509,13 +521,14 @@ class _LoginScreenState extends State<LoginScreen> {
           ],
         ),
       ),
-      validator: (v) {
-        if (v == null || v.isEmpty) return 'Phone number is required';
+      validator: (value) {
+        if (value == null || value.isEmpty) {
+          return 'Phone number is required';
+        }
 
-        final n = _normalizePhone(v);
-
-        if (n.length != 11) return 'Please enter your 10-digit number';
-        if (!n.startsWith('09')) return 'Must start with 9';
+        if (!RegExp(r'^9\d{9}$').hasMatch(value)) {
+          return 'Enter 10 digits starting with 9';
+        }
 
         return null;
       },
@@ -528,7 +541,10 @@ class _LoginScreenState extends State<LoginScreen> {
       keyboardType: TextInputType.number,
       maxLength: 6,
       obscureText: _obscurePin,
-      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+      inputFormatters: [
+        FilteringTextInputFormatter.digitsOnly,
+        LengthLimitingTextInputFormatter(6),
+      ],
       style: const TextStyle(
         color: inkColor,
         fontSize: 15,
@@ -540,12 +556,20 @@ class _LoginScreenState extends State<LoginScreen> {
         prefix: const AuthFieldIcon(AuthIcons.pin),
         suffix: AuthPinVisibilityButton(
           obscured: _obscurePin,
-          onPressed: () => setState(() => _obscurePin = !_obscurePin),
+          onPressed: () {
+            setState(() => _obscurePin = !_obscurePin);
+          },
         ),
       ),
-      validator: (v) {
-        if (v == null || v.isEmpty) return 'PIN is required';
-        if (v.length != 6) return 'PIN must be exactly 6 digits';
+      validator: (value) {
+        if (value == null || value.isEmpty) {
+          return 'MPIN is required';
+        }
+
+        if (!RegExp(r'^\d{6}$').hasMatch(value)) {
+          return 'Enter your 6-digit MPIN';
+        }
+
         return null;
       },
     );
