@@ -55,16 +55,10 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
-  /// Accepts "9XXXXXXXXX" or "09XXXXXXXXX" and returns "09XXXXXXXXX".
-  String _normalizePhone(String v) {
-    if (v.length == 10 && v.startsWith('9')) return '0$v';
-    return v;
-  }
-
+  /// Accepts exactly 10 digits starting with 9.
+  /// Converts 9123456789 into +639123456789.
   String _formatPhone(String rawPhone) {
-    return rawPhone.startsWith('0')
-        ? '+63${rawPhone.substring(1)}'
-        : '+63$rawPhone';
+    return '+63$rawPhone';
   }
 
   void _snack(String message) {
@@ -99,8 +93,16 @@ class _SignUpScreenState extends State<SignUpScreen> {
     if (!fieldsValid || !_agreed) return;
 
     final username = _username.text.trim();
-    final rawPhone = _normalizePhone(_phone.text.trim());
+    final rawPhone = _phone.text.trim();
     final pin = _pin.text.trim();
+
+    // The +63 prefix is already displayed in the field.
+    // Only accept 10 digits beginning with 9.
+    if (!RegExp(r'^9\d{9}$').hasMatch(rawPhone)) {
+      _formKey.currentState!.validate();
+      return;
+    }
+
     final phone = _formatPhone(rawPhone);
 
     setState(() => _isSendingOtp = true);
@@ -320,8 +322,11 @@ class _SignUpScreenState extends State<SignUpScreen> {
     return TextFormField(
       controller: _phone,
       keyboardType: TextInputType.number,
-      maxLength: 11,
-      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+      maxLength: 10,
+      inputFormatters: [
+        FilteringTextInputFormatter.digitsOnly,
+        LengthLimitingTextInputFormatter(10),
+      ],
       style: const TextStyle(
         color: _inkColor,
         fontSize: 15,
@@ -348,15 +353,18 @@ class _SignUpScreenState extends State<SignUpScreen> {
         ),
       ),
       onChanged: (_) {
-        if (_phoneServerError != null) _phoneServerError = null;
+        if (_phoneServerError != null) {
+          setState(() => _phoneServerError = null);
+        }
       },
       validator: (v) {
-        if (v == null || v.isEmpty) return 'Phone number is required';
+        if (v == null || v.isEmpty) {
+          return 'Phone number is required';
+        }
 
-        final n = _normalizePhone(v);
-
-        if (n.length != 11) return 'Please enter your 10-digit number';
-        if (!n.startsWith('09')) return 'Must start with 9';
+        if (!RegExp(r'^9\d{9}$').hasMatch(v)) {
+          return 'Enter 10 digits starting with 9 (e.g. 9123456789)';
+        }
 
         return _phoneServerError;
       },

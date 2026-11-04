@@ -80,15 +80,8 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
   /// Accepts "9XXXXXXXXX" or "09XXXXXXXXX" and returns "09XXXXXXXXX".
-  String _normalizePhone(String v) {
-    if (v.length == 10 && v.startsWith('9')) return '0$v';
-    return v;
-  }
-
   String _formatPhone(String rawPhone) {
-    return rawPhone.startsWith('0')
-        ? '+63${rawPhone.substring(1)}'
-        : '+63$rawPhone';
+    return '+63$rawPhone';
   }
 
   /// "+639123456789" -> "+63 912 345 6789"
@@ -165,7 +158,14 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
     } else {
       setState(() => _autoValidate = true);
       if (!_formKey.currentState!.validate()) return;
-      phone = _formatPhone(_normalizePhone(_phoneController.text.trim()));
+      final rawPhone = _phoneController.text.trim();
+
+      if (!RegExp(r'^9\d{9}$').hasMatch(rawPhone)) {
+        _formKey.currentState!.validate();
+        return;
+      }
+
+      phone = _formatPhone(rawPhone);
     }
 
     setState(() {
@@ -491,8 +491,11 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
     return TextFormField(
       controller: _phoneController,
       keyboardType: TextInputType.number,
-      maxLength: 11,
-      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+      maxLength: 10,
+      inputFormatters: [
+        FilteringTextInputFormatter.digitsOnly,
+        LengthLimitingTextInputFormatter(10),
+      ],
       style: const TextStyle(
         color: inkColor,
         fontSize: 15,
@@ -519,12 +522,13 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
         ),
       ),
       validator: (v) {
-        if (v == null || v.isEmpty) return 'Phone number is required';
+        if (v == null || v.isEmpty) {
+          return 'Phone number is required';
+        }
 
-        final n = _normalizePhone(v);
-
-        if (n.length != 11) return 'Please enter your 10-digit number';
-        if (!n.startsWith('09')) return 'Must start with 9';
+        if (!RegExp(r'^9\d{9}$').hasMatch(v)) {
+          return 'Enter 10 digits starting with 9 (e.g. 9123456789)';
+        }
 
         return null;
       },
