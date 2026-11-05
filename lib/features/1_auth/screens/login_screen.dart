@@ -7,6 +7,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 import 'package:pare_app/core/database/user_service.dart';
 import 'package:pare_app/features/main_nav_screen.dart';
+import 'package:pare_app/core/utils/philippine_phone_formatter.dart';
 
 import 'signup_screen.dart';
 import 'otp_screen.dart';
@@ -65,9 +66,13 @@ class _LoginScreenState extends State<LoginScreen> {
       if (mounted) {
         // The field displays +63 separately, so only the 10 digits
         // should be placed inside the controller.
-        _phoneController.text = phone.startsWith('+63')
+        final localDigits = phone.startsWith('+63')
             ? phone.substring(3)
             : phone;
+
+        _phoneController.text = PhilippinePhoneFormatter.formatDigits(
+          localDigits,
+        );
 
         setState(() {
           _returningAccount = trusted;
@@ -113,7 +118,7 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    final rawPhone = _phoneController.text.trim();
+    final rawPhone = _phoneController.text.replaceAll(RegExp(r'\D'), '');
     final pin = _pinController.text.trim();
 
     // Strict validation: exactly 10 digits, starting with 9.
@@ -491,11 +496,7 @@ class _LoginScreenState extends State<LoginScreen> {
     return TextFormField(
       controller: _phoneController,
       keyboardType: TextInputType.number,
-      maxLength: 10,
-      inputFormatters: [
-        FilteringTextInputFormatter.digitsOnly,
-        LengthLimitingTextInputFormatter(10),
-      ],
+      inputFormatters: [PhilippinePhoneFormatter()],
       style: const TextStyle(
         color: inkColor,
         fontSize: 15,
@@ -522,11 +523,13 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       ),
       validator: (value) {
-        if (value == null || value.isEmpty) {
+        final digits = (value ?? '').replaceAll(RegExp(r'\D'), '');
+
+        if (digits.isEmpty) {
           return 'Phone number is required';
         }
 
-        if (!RegExp(r'^9\d{9}$').hasMatch(value)) {
+        if (!RegExp(r'^9\d{9}$').hasMatch(digits)) {
           return 'Enter 10 digits starting with 9';
         }
 

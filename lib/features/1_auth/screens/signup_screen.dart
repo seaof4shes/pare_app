@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import 'package:pare_app/core/database/user_service.dart';
+import 'package:pare_app/core/utils/philippine_phone_formatter.dart';
 
 import 'login_screen.dart';
 import 'otp_screen.dart';
@@ -93,7 +94,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
     if (!fieldsValid || !_agreed) return;
 
     final username = _username.text.trim();
-    final rawPhone = _phone.text.trim();
+    final rawPhone = _phone.text.replaceAll(RegExp(r'\D'), '');
     final pin = _pin.text.trim();
 
     // The +63 prefix is already displayed in the field.
@@ -322,11 +323,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
     return TextFormField(
       controller: _phone,
       keyboardType: TextInputType.number,
-      maxLength: 10,
-      inputFormatters: [
-        FilteringTextInputFormatter.digitsOnly,
-        LengthLimitingTextInputFormatter(10),
-      ],
+      inputFormatters: [PhilippinePhoneFormatter()],
       style: const TextStyle(
         color: _inkColor,
         fontSize: 15,
@@ -358,11 +355,13 @@ class _SignUpScreenState extends State<SignUpScreen> {
         }
       },
       validator: (v) {
-        if (v == null || v.isEmpty) {
+        final digits = (v ?? '').replaceAll(RegExp(r'\D'), '');
+
+        if (digits.isEmpty) {
           return 'Phone number is required';
         }
 
-        if (!RegExp(r'^9\d{9}$').hasMatch(v)) {
+        if (!RegExp(r'^9\d{9}$').hasMatch(digits)) {
           return 'Enter 10 digits starting with 9 (e.g. 9123456789)';
         }
 

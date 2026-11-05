@@ -133,8 +133,8 @@ class _SplashScreenState extends State<SplashScreen>
           child: Stack(
             children: [
               const Positioned(
-                right: -110,
-                bottom: -110,
+                right: -120,
+                top: -120,
                 child: CustomPaint(
                   size: Size(340, 340),
                   painter: RingsPainter(),

@@ -7,6 +7,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 import 'package:pare_app/core/database/user_service.dart';
 import 'package:pare_app/core/utils/hash_helper.dart';
+import 'package:pare_app/core/utils/philippine_phone_formatter.dart';
+
 import 'login_screen.dart';
 import 'rings_painter.dart';
 
@@ -158,7 +160,7 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
     } else {
       setState(() => _autoValidate = true);
       if (!_formKey.currentState!.validate()) return;
-      final rawPhone = _phoneController.text.trim();
+      final rawPhone = _phoneController.text.replaceAll(RegExp(r'\D'), '');
 
       if (!RegExp(r'^9\d{9}$').hasMatch(rawPhone)) {
         _formKey.currentState!.validate();
@@ -491,11 +493,7 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
     return TextFormField(
       controller: _phoneController,
       keyboardType: TextInputType.number,
-      maxLength: 10,
-      inputFormatters: [
-        FilteringTextInputFormatter.digitsOnly,
-        LengthLimitingTextInputFormatter(10),
-      ],
+      inputFormatters: [PhilippinePhoneFormatter()],
       style: const TextStyle(
         color: inkColor,
         fontSize: 15,
@@ -522,11 +520,13 @@ class _ForgotMpinScreenState extends State<ForgotMpinScreen> {
         ),
       ),
       validator: (v) {
-        if (v == null || v.isEmpty) {
+        final digits = (v ?? '').replaceAll(RegExp(r'\D'), '');
+
+        if (digits.isEmpty) {
           return 'Phone number is required';
         }
 
-        if (!RegExp(r'^9\d{9}$').hasMatch(v)) {
+        if (!RegExp(r'^9\d{9}$').hasMatch(digits)) {
           return 'Enter 10 digits starting with 9 (e.g. 9123456789)';
         }
 

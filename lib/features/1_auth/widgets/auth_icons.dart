@@ -7,12 +7,14 @@ abstract final class AuthIcons {
   static const pin = Icons.lock_outline;
   static const code = Icons.sms_outlined;
   static const size = 20.0;
+
   static Color color(bool onDark) =>
       onDark ? Colors.white70 : const Color(0xFF6B7686);
 }
 
 class AuthFieldIcon extends StatelessWidget {
   const AuthFieldIcon(this.icon, {super.key, this.onDark = false});
+
   final IconData icon;
   final bool onDark;
 
@@ -29,6 +31,7 @@ class AuthPinVisibilityButton extends StatelessWidget {
     required this.onPressed,
     this.onDark = false,
   });
+
   final bool obscured;
   final VoidCallback onPressed;
   final bool onDark;
@@ -39,7 +42,8 @@ class AuthPinVisibilityButton extends StatelessWidget {
     constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
     onPressed: onPressed,
     icon: Icon(
-      obscured ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+      // Hidden MPIN = closed eye; visible MPIN = open eye.
+      obscured ? Icons.visibility_off_outlined : Icons.visibility_outlined,
       size: AuthIcons.size,
       color: AuthIcons.color(onDark),
     ),

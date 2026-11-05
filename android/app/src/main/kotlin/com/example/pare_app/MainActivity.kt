@@ -25,7 +25,6 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         MpinCrypto.install(flutterEngine)
         wifiMonitor = WifiMonitor(applicationContext, flutterEngine)
-        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
         SmsAnalysisJob.schedule(applicationContext)
 
         // =========================================================
